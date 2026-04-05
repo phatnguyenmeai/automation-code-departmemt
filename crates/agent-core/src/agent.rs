@@ -1,16 +1,21 @@
-use crate::{message::TaskMessage, Result};
+use crate::{artifact::ArtifactStore, message::TaskMessage, Result};
 use async_trait::async_trait;
+use std::path::PathBuf;
 use std::sync::Arc;
+use uuid::Uuid;
 
 /// Shared context passed to every agent invocation.
 ///
-/// Holds trace/workspace identity and a handle to dispatch follow-up
-/// tasks back to the gateway (used by agents that need to emit mid-flight
-/// side tasks; most agents just return `AgentOutput::Dispatch`).
+/// Holds trace/workspace identity, a dispatch handle for emitting side
+/// tasks, and an artifact store for reading inputs + writing outputs.
 #[derive(Clone)]
 pub struct AgentCtx {
     pub workspace_id: String,
+    pub session_id: Uuid,
+    /// Absolute path to the session run directory (`runs/<session_id>/`).
+    pub run_dir: PathBuf,
     pub dispatch: Arc<dyn Dispatcher>,
+    pub artifacts: Arc<dyn ArtifactStore>,
 }
 
 /// Handle to send a message back into the gateway's lane queue.

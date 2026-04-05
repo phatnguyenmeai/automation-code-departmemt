@@ -1,24 +1,20 @@
+use crate::{read_ref, render_fallback_md, write_pair};
 use agent_core::{
     Agent, AgentCtx, AgentError, AgentOutput, Result, Role, TaskKind, TaskMessage,
 };
 use async_trait::async_trait;
-use std::collections::HashMap;
 
 /// Project Manager agent.
 ///
-/// - Receives the raw `Requirement` from the CLI and forwards it to BA.
-/// - Receives `TestReport` and produces `FinalReport` (Done).
-/// - Receives `Blocker` and logs / retries (v1: just emits FinalReport with failure).
-pub struct PmAgent {
-    /// Track in-flight test reports keyed by the originating story id.
-    collected: HashMap<String, serde_json::Value>,
-}
+/// - Receives the initial `Requirement` artifact (written by the CLI) and
+///   forwards it to BA.
+/// - Receives `TestReport`, writes `FinalReport` artifact, emits Done.
+/// - Receives `Blocker`, writes terminal `FinalReport` with failure.
+pub struct PmAgent;
 
 impl PmAgent {
     pub fn new() -> Self {
-        Self {
-            collected: HashMap::new(),
-        }
+        Self
     }
 }
 
@@ -34,28 +30,57 @@ impl Agent for PmAgent {
         Role::PM
     }
 
-    async fn handle(&mut self, msg: TaskMessage, _ctx: &AgentCtx) -> Result<AgentOutput> {
+    async fn handle(&mut self, msg: TaskMessage, ctx: &AgentCtx) -> Result<AgentOutput> {
         match msg.kind {
             TaskKind::Requirement => {
-                // Kick off pipeline: forward to BA.
-                let fwd = msg.reply(Role::PM, Role::BA, TaskKind::Requirement, msg.payload.clone());
+                // Just forward to BA: the requirement artifact already exists
+                // on disk (written by CLI). Reuse the same artifact ref.
+                let fwd = msg.reply(
+                    Role::PM,
+                    Role::BA,
+                    TaskKind::Requirement,
+                    msg.artifact.clone(),
+                    msg.summary.clone(),
+                );
                 Ok(AgentOutput::Dispatch(vec![fwd]))
             }
             TaskKind::TestReport => {
-                self.collected
-                    .insert(msg.id.to_string(), msg.payload.clone());
-                let report = serde_json::json!({
+                // Read test-report content, produce final-report artifact.
+                let report = read_ref(ctx, &msg.artifact).await?;
+                let final_data = serde_json::json!({
                     "status": "done",
-                    "test_report": msg.payload,
+                    "test_report_summary": msg.summary,
+                    "test_report": report,
                 });
-                Ok(AgentOutput::Done(report))
+                let md = render_final_md(&final_data);
+                let _art = write_pair(
+                    ctx,
+                    Role::PM,
+                    TaskKind::FinalReport.slug(),
+                    msg.id,
+                    &final_data,
+                    &md,
+                )
+                .await?;
+                Ok(AgentOutput::Done(final_data))
             }
             TaskKind::Blocker => {
-                let report = serde_json::json!({
+                let blocker = read_ref(ctx, &msg.artifact).await.unwrap_or_default();
+                let final_data = serde_json::json!({
                     "status": "blocked",
-                    "reason": msg.payload,
+                    "blocker": blocker,
                 });
-                Ok(AgentOutput::Done(report))
+                let md = render_fallback_md("Final Report (blocked)", &final_data);
+                let _art = write_pair(
+                    ctx,
+                    Role::PM,
+                    TaskKind::FinalReport.slug(),
+                    msg.id,
+                    &final_data,
+                    &md,
+                )
+                .await?;
+                Ok(AgentOutput::Done(final_data))
             }
             other => Err(AgentError::Other(format!(
                 "PM: unexpected task kind {:?}",
@@ -63,4 +88,21 @@ impl Agent for PmAgent {
             ))),
         }
     }
+}
+
+fn render_final_md(data: &serde_json::Value) -> String {
+    let mut out = String::new();
+    out.push_str("# Final Report\n\n");
+    let status = data
+        .get("status")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    out.push_str(&format!("**Status**: {status}\n\n"));
+    if let Some(summary) = data.get("test_report_summary") {
+        out.push_str("## Test Summary\n\n");
+        out.push_str("```json\n");
+        out.push_str(&serde_json::to_string_pretty(summary).unwrap_or_default());
+        out.push_str("\n```\n");
+    }
+    out
 }

@@ -1,4 +1,4 @@
-use crate::parse_json;
+use crate::{other, parse_json, read_ref, skip_if_exists, write_pair};
 use agent_core::{
     Agent, AgentCtx, AgentError, AgentOutput, Result, Role, TaskKind, TaskMessage,
 };
@@ -23,20 +23,15 @@ pub struct TestAgent {
     llm: ClaudeClient,
     strategy_model: ClaudeModel,
     exec_model: ClaudeModel,
-    /// Buffered inputs from Dev + Frontend.
     buf: Arc<Mutex<Buffer>>,
-    /// Base URL for integration tests.
     base_url: String,
-    /// Whether to actually spawn Playwright MCP. Set to false to skip UI tests
-    /// (useful when the environment has no browser).
     enable_playwright: bool,
 }
 
 #[derive(Default)]
 struct Buffer {
-    stories_and_api: Option<serde_json::Value>,
-    frontend: Option<serde_json::Value>,
-    origin: Option<TaskMessage>,
+    impl_msg: Option<TaskMessage>,
+    fe_msg: Option<TaskMessage>,
 }
 
 impl TestAgent {
@@ -64,12 +59,12 @@ impl Agent for TestAgent {
         Role::Test
     }
 
-    async fn handle(&mut self, msg: TaskMessage, _ctx: &AgentCtx) -> Result<AgentOutput> {
+    async fn handle(&mut self, msg: TaskMessage, ctx: &AgentCtx) -> Result<AgentOutput> {
         {
             let mut buf = self.buf.lock().await;
             match msg.kind {
-                TaskKind::ImplSpec => buf.stories_and_api = Some(msg.payload.clone()),
-                TaskKind::FrontendSpec => buf.frontend = Some(msg.payload.clone()),
+                TaskKind::ImplSpec => buf.impl_msg = Some(msg.clone()),
+                TaskKind::FrontendSpec => buf.fe_msg = Some(msg.clone()),
                 other => {
                     return Err(AgentError::Other(format!(
                         "Test: unexpected kind {:?}",
@@ -77,64 +72,86 @@ impl Agent for TestAgent {
                     )));
                 }
             }
-            if buf.origin.is_none() {
-                buf.origin = Some(msg.clone());
-            }
-            if buf.stories_and_api.is_none() || buf.frontend.is_none() {
+            if buf.impl_msg.is_none() || buf.fe_msg.is_none() {
                 tracing::info!("Test: waiting for remaining input");
                 return Ok(AgentOutput::Dispatch(vec![]));
             }
         }
 
-        // Both inputs present -> strategy phase.
-        let (impl_spec, fe_spec, origin) = {
+        let (impl_msg, fe_msg) = {
             let mut buf = self.buf.lock().await;
-            (
-                buf.stories_and_api.take().expect("impl"),
-                buf.frontend.take().expect("fe"),
-                buf.origin.take().expect("origin"),
-            )
+            (buf.impl_msg.take().unwrap(), buf.fe_msg.take().unwrap())
         };
 
-        let plan_prompt = PromptBuilder::new()
-            .json_section("ImplSpec (stories+api)", &impl_spec)
-            .json_section("FrontendSpec", &fe_spec)
-            .section("Base URL", &self.base_url)
-            .section("Task", "Produce test plan JSON.")
-            .build();
+        // Use impl_msg.id as the canonical "input id" for Test's output
+        // artifacts (both impl + fe contribute, but resume key must be stable).
+        let input_id = impl_msg.id;
 
-        let plan_text = self
-            .llm
-            .complete(self.strategy_model, Some(STRATEGY_SYSTEM), &plan_prompt, 3072)
-            .await
-            .map_err(|e| AgentError::Llm(e.to_string()))?;
-        let plan = parse_json(&plan_text).map_err(|e| AgentError::Llm(e.to_string()))?;
+        // --- Strategy phase: reuse plan if already produced ---
+        let plan_ref = if let Some(existing) =
+            skip_if_exists(ctx, Role::Test, TaskKind::TestPlan.slug(), input_id).await?
+        {
+            tracing::info!("Test: reusing existing test-plan");
+            existing
+        } else {
+            let impl_spec = read_ref(ctx, &impl_msg.artifact).await?;
+            let fe_spec = read_ref(ctx, &fe_msg.artifact).await?;
+            let prompt = PromptBuilder::new()
+                .json_section("ImplSpec (stories+api)", &impl_spec)
+                .json_section("FrontendSpec", &fe_spec)
+                .section("Base URL", &self.base_url)
+                .section("Task", "Produce test plan JSON.")
+                .build();
+            let text = self
+                .llm
+                .complete(self.strategy_model, Some(STRATEGY_SYSTEM), &prompt, 3072)
+                .await
+                .map_err(|e| AgentError::Llm(e.to_string()))?;
+            let plan = parse_json(&text).map_err(other)?;
+            let md = render_plan_md(&plan);
+            write_pair(ctx, Role::Test, TaskKind::TestPlan.slug(), input_id, &plan, &md).await?
+        };
 
-        tracing::info!(scenarios = %plan.get("scenarios").map(|v| v.as_array().map(|a| a.len()).unwrap_or(0)).unwrap_or(0), "test plan generated");
+        // --- Execution + report: reuse if already produced ---
+        let report_ref = if let Some(existing) =
+            skip_if_exists(ctx, Role::Test, TaskKind::TestReport.slug(), input_id).await?
+        {
+            tracing::info!("Test: reusing existing test-report");
+            existing
+        } else {
+            let plan = read_ref(ctx, &plan_ref).await?;
+            let exec_results = self.execute_plan(&plan).await;
+            let summary_prompt = PromptBuilder::new()
+                .json_section("Plan", &plan)
+                .json_section("RawResults", &exec_results)
+                .section("Task", "Summarize into the specified JSON.")
+                .build();
+            let summary_text = self
+                .llm
+                .complete(self.exec_model, Some(EXEC_SYSTEM), &summary_prompt, 1024)
+                .await
+                .map_err(|e| AgentError::Llm(e.to_string()))?;
+            let summary = parse_json(&summary_text).map_err(other)?;
+            let report = serde_json::json!({
+                "plan_ref": plan_ref.json_path,
+                "raw_results": exec_results,
+                "summary": summary,
+            });
+            let md = render_report_md(&report);
+            write_pair(
+                ctx,
+                Role::Test,
+                TaskKind::TestReport.slug(),
+                input_id,
+                &report,
+                &md,
+            )
+            .await?
+        };
 
-        // Execution phase: run each scenario.
-        let exec_results = self.execute_plan(&plan).await;
-
-        // Summarize.
-        let summary_prompt = PromptBuilder::new()
-            .json_section("Plan", &plan)
-            .json_section("RawResults", &exec_results)
-            .section("Task", "Summarize into the specified JSON.")
-            .build();
-        let summary_text = self
-            .llm
-            .complete(self.exec_model, Some(EXEC_SYSTEM), &summary_prompt, 1024)
-            .await
-            .map_err(|e| AgentError::Llm(e.to_string()))?;
-        let summary = parse_json(&summary_text).map_err(|e| AgentError::Llm(e.to_string()))?;
-
-        let report = serde_json::json!({
-            "plan": plan,
-            "raw_results": exec_results,
-            "summary": summary,
-        });
-
-        let to_pm = origin.reply(Role::Test, Role::PM, TaskKind::TestReport, report);
+        let content = read_ref(ctx, &report_ref).await.unwrap_or_default();
+        let summary = content.get("summary").cloned().unwrap_or_default();
+        let to_pm = impl_msg.reply(Role::Test, Role::PM, TaskKind::TestReport, report_ref, summary);
         Ok(AgentOutput::Dispatch(vec![to_pm]))
     }
 }
@@ -147,9 +164,11 @@ impl TestAgent {
             .cloned()
             .unwrap_or_default();
 
-        // Lazily launch Playwright MCP only if we need UI scenarios.
         let mut pw: Option<PlaywrightMcp> = None;
-        if self.enable_playwright && scenarios.iter().any(|s| s.get("kind").and_then(|k| k.as_str()) == Some("ui"))
+        if self.enable_playwright
+            && scenarios.iter().any(|s| {
+                s.get("kind").and_then(|k| k.as_str()) == Some("ui")
+            })
         {
             match PlaywrightMcp::launch().await {
                 Ok(p) => pw = Some(p),
@@ -166,10 +185,7 @@ impl TestAgent {
                 .and_then(|v| v.as_str())
                 .unwrap_or("?")
                 .to_string();
-            let kind = scenario
-                .get("kind")
-                .and_then(|v| v.as_str())
-                .unwrap_or("ui");
+            let kind = scenario.get("kind").and_then(|v| v.as_str()).unwrap_or("ui");
             let steps = scenario
                 .get("steps")
                 .and_then(|v| v.as_array())
@@ -280,6 +296,28 @@ impl TestAgent {
             _ => Err(format!("unknown action '{action}' (kind={kind})")),
         }
     }
+
+    /// On resume, restore the buffer by scanning the most recent ImplSpec /
+    /// FrontendSpec messages delivered to Test from the transcript.
+    pub async fn restore_buffer(&self, msgs: &[TaskMessage]) {
+        let mut buf = self.buf.lock().await;
+        for m in msgs {
+            if m.to != Role::Test {
+                continue;
+            }
+            match m.kind {
+                TaskKind::ImplSpec => buf.impl_msg = Some(m.clone()),
+                TaskKind::FrontendSpec => buf.fe_msg = Some(m.clone()),
+                _ => {}
+            }
+        }
+    }
+
+    /// Expose buffer completeness for resume decisions.
+    pub async fn buffer_ready(&self) -> bool {
+        let buf = self.buf.lock().await;
+        buf.impl_msg.is_some() && buf.fe_msg.is_some()
+    }
 }
 
 fn resolve_url(base: &str, url: &str) -> String {
@@ -291,3 +329,45 @@ fn resolve_url(base: &str, url: &str) -> String {
         format!("{}/{}", base.trim_end_matches('/'), url)
     }
 }
+
+// --- Markdown renderers ---
+
+fn render_plan_md(plan: &serde_json::Value) -> String {
+    let mut out = String::from("# Test Plan\n\n");
+    let empty = vec![];
+    let scenarios = plan
+        .get("scenarios")
+        .and_then(|v| v.as_array())
+        .unwrap_or(&empty);
+    for s in scenarios {
+        let id = s.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+        let kind = s.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
+        let prio = s.get("priority").and_then(|v| v.as_str()).unwrap_or("?");
+        let title = s.get("title").and_then(|v| v.as_str()).unwrap_or("");
+        out.push_str(&format!("- [ ] **{id}** ({prio}, {kind}): {title}\n"));
+    }
+    out
+}
+
+fn render_report_md(report: &serde_json::Value) -> String {
+    let mut out = String::from("# Test Report\n\n");
+    if let Some(summary) = report.get("summary") {
+        if let Some(line) = summary.get("summary").and_then(|v| v.as_str()) {
+            out.push_str(&format!("{line}\n\n"));
+        }
+        let passed = summary.get("passed").and_then(|v| v.as_u64()).unwrap_or(0);
+        let failed = summary.get("failed").and_then(|v| v.as_u64()).unwrap_or(0);
+        out.push_str(&format!("**Passed**: {passed}  **Failed**: {failed}\n\n"));
+        if let Some(details) = summary.get("details").and_then(|v| v.as_array()) {
+            out.push_str("| id | status | note |\n|---|---|---|\n");
+            for d in details {
+                let id = d.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+                let st = d.get("status").and_then(|v| v.as_str()).unwrap_or("?");
+                let note = d.get("note").and_then(|v| v.as_str()).unwrap_or("");
+                out.push_str(&format!("| {id} | {st} | {note} |\n"));
+            }
+        }
+    }
+    out
+}
+

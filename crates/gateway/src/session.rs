@@ -1,31 +1,35 @@
+use crate::transcript::TranscriptHandle;
 use agent_core::TaskMessage;
-use std::sync::{Arc, Mutex};
+use std::path::PathBuf;
 use uuid::Uuid;
 
-/// In-memory transcript of one orchestration run.
+/// Durable session: routes each recorded message to the batched transcript
+/// writer. No in-memory `Vec` — the transcript file is the source of truth.
 #[derive(Clone)]
 pub struct Session {
     pub id: Uuid,
     pub workspace_id: String,
-    history: Arc<Mutex<Vec<TaskMessage>>>,
+    pub run_dir: PathBuf,
+    transcript: TranscriptHandle,
 }
 
 impl Session {
-    pub fn new(workspace_id: impl Into<String>) -> Self {
+    pub fn new(
+        id: Uuid,
+        workspace_id: impl Into<String>,
+        run_dir: PathBuf,
+        transcript: TranscriptHandle,
+    ) -> Self {
         Self {
-            id: Uuid::new_v4(),
+            id,
             workspace_id: workspace_id.into(),
-            history: Arc::new(Mutex::new(Vec::new())),
+            run_dir,
+            transcript,
         }
     }
 
+    /// Record a dispatched message to the transcript (non-blocking).
     pub fn record(&self, msg: &TaskMessage) {
-        if let Ok(mut h) = self.history.lock() {
-            h.push(msg.clone());
-        }
-    }
-
-    pub fn snapshot(&self) -> Vec<TaskMessage> {
-        self.history.lock().map(|h| h.clone()).unwrap_or_default()
+        self.transcript.record(msg.clone());
     }
 }

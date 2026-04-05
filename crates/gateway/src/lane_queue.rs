@@ -130,7 +130,18 @@ pub async fn recv_prioritized(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent_core::{TaskKind, TaskMessage};
+    use agent_core::{ArtifactRef, TaskId, TaskKind, TaskMessage};
+    use std::path::PathBuf;
+
+    fn dummy_ref() -> ArtifactRef {
+        ArtifactRef {
+            json_path: PathBuf::from("x.json"),
+            md_path: PathBuf::from("x.md"),
+            kind: "requirement".into(),
+            role: Role::PM,
+            task_id: TaskId::new(),
+        }
+    }
 
     #[tokio::test]
     async fn high_preempts_normal() {
@@ -140,9 +151,9 @@ mod tests {
             normal: lane.normal_tx.clone(),
             low: lane.low_tx.clone(),
         };
-        let mut n = TaskMessage::new(Role::PM, Role::BA, TaskKind::Requirement, serde_json::json!(1));
+        let mut n = TaskMessage::new(Role::PM, Role::BA, TaskKind::Requirement, dummy_ref(), serde_json::json!(1));
         n.priority = Priority::Normal;
-        let mut h = TaskMessage::new(Role::PM, Role::BA, TaskKind::Requirement, serde_json::json!(2));
+        let mut h = TaskMessage::new(Role::PM, Role::BA, TaskKind::Requirement, dummy_ref(), serde_json::json!(2));
         h.priority = Priority::High;
         sender.send(n).unwrap();
         sender.send(h).unwrap();

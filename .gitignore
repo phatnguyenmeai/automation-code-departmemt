@@ -28,3 +28,6 @@ target
 # Logs
 *.log
 
+# Session runs (artifacts + transcripts)
+/runs/
+

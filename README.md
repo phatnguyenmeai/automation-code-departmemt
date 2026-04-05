@@ -76,6 +76,35 @@ cargo build --release
 
 Skip browser tests (e.g. in CI without a display) with `--no-playwright`.
 
+Each run creates `runs/<session-id>/` with a JSONL transcript + per-role
+artifact pairs (`<kind>-<parent>.json` + `.md`). Crash mid-flight? resume:
+
+```bash
+./target/release/agentdept run --resume <session-id>
+```
+
+Completed artifacts are reused automatically — only the remaining LLM
+calls execute.
+
+## Session layout
+
+```
+runs/<session-id>/
+├── meta.json              # workspace_id, created_at
+├── transcript.jsonl       # every TaskMessage dispatched (batched, 100ms flush)
+└── artifacts/
+    ├── pm/requirement-<id>.{json,md}
+    ├── pm/final-report-<id>.{json,md}
+    ├── ba/story-<id>.{json,md}
+    ├── dev/impl-spec-<id>.{json,md}
+    ├── frontend/frontend-spec-<id>.{json,md}
+    └── test/test-plan-<id>.{json,md}
+        test/test-report-<id>.{json,md}
+```
+
+Artifact filenames are indexed by the *input* task id, so resume locates
+"already produced" outputs by `(role, kind, parent_id)`.
+
 ## Configuration
 
 `config/workspace.toml` (see file for defaults):
@@ -83,6 +112,9 @@ Skip browser tests (e.g. in CI without a display) with `--no-playwright`.
 ```toml
 [workspace]
 id = "dev-department-default"
+
+[runtime]
+runs_dir = "./runs"
 
 [models]
 pm = "opus"
