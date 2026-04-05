@@ -1,0 +1,167 @@
+use crate::lane_queue::{recv_prioritized, LaneQueue, LaneSender};
+use crate::session::Session;
+use agent_core::{
+    Agent, AgentCtx, AgentOutput, Dispatcher, Result as AgentResult, Role, TaskMessage,
+};
+use async_trait::async_trait;
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::{mpsc, Mutex};
+use tokio::task::JoinHandle;
+
+/// Workspace bundles config + session state for one orchestration run.
+pub struct Workspace {
+    pub id: String,
+    pub session: Session,
+}
+
+impl Workspace {
+    pub fn new(id: impl Into<String>) -> Self {
+        let id = id.into();
+        let session = Session::new(id.clone());
+        Self { id, session }
+    }
+}
+
+/// Cloneable dispatcher backed by per-role LaneSenders.
+#[derive(Clone)]
+pub struct GatewayDispatcher {
+    senders: Arc<HashMap<Role, LaneSender>>,
+    session: Session,
+}
+
+#[async_trait]
+impl Dispatcher for GatewayDispatcher {
+    async fn dispatch(&self, msg: TaskMessage) -> AgentResult<()> {
+        self.session.record(&msg);
+        let sender = self
+            .senders
+            .get(&msg.to)
+            .ok_or_else(|| agent_core::AgentError::Other(format!("no lane for {}", msg.to)))?;
+        sender
+            .send(msg)
+            .map_err(|e| agent_core::AgentError::Other(format!("dispatch: {e}")))?;
+        Ok(())
+    }
+}
+
+/// Terminal signal emitted when PM produces a FinalReport or all agents idle.
+pub type FinalSignal = mpsc::UnboundedReceiver<serde_json::Value>;
+
+pub struct Gateway {
+    workspace: Workspace,
+    queue: LaneQueue,
+    senders: HashMap<Role, LaneSender>,
+    final_tx: mpsc::UnboundedSender<serde_json::Value>,
+    final_rx: Option<FinalSignal>,
+}
+
+impl Gateway {
+    pub fn new(workspace: Workspace) -> Self {
+        let queue = LaneQueue::new();
+        let mut senders = HashMap::new();
+        for r in Role::all() {
+            senders.insert(*r, queue.sender(*r));
+        }
+        let (final_tx, final_rx) = mpsc::unbounded_channel();
+        Self {
+            workspace,
+            queue,
+            senders,
+            final_tx,
+            final_rx: Some(final_rx),
+        }
+    }
+
+    pub fn sender(&self, role: Role) -> LaneSender {
+        self.senders.get(&role).expect("role").clone()
+    }
+
+    pub fn dispatcher(&self) -> Arc<dyn Dispatcher> {
+        Arc::new(GatewayDispatcher {
+            senders: Arc::new(self.senders.clone()),
+            session: self.workspace.session.clone(),
+        })
+    }
+
+    pub fn take_final_rx(&mut self) -> FinalSignal {
+        self.final_rx.take().expect("final rx already taken")
+    }
+
+    pub fn session(&self) -> Session {
+        self.workspace.session.clone()
+    }
+
+    /// Spawn one worker task per agent. Returns join handles.
+    pub fn spawn_workers(
+        &mut self,
+        agents: Vec<Box<dyn Agent>>,
+    ) -> Vec<JoinHandle<()>> {
+        let ctx = AgentCtx {
+            workspace_id: self.workspace.id.clone(),
+            dispatch: self.dispatcher(),
+        };
+        let session = self.workspace.session.clone();
+        let final_tx = self.final_tx.clone();
+
+        let mut handles = Vec::new();
+        for agent in agents {
+            let role = agent.role();
+            let mut lane = self.queue.take_lane(role);
+            let (mut hr, mut nr, mut lr) = lane.take_receivers();
+            let agent = Arc::new(Mutex::new(agent));
+            let ctx = ctx.clone();
+            let session = session.clone();
+            let final_tx = final_tx.clone();
+            let dispatcher = self.dispatcher();
+
+            let handle = tokio::spawn(async move {
+                tracing::info!(role = %role, "agent worker started");
+                while let Some(msg) = recv_prioritized(&mut hr, &mut nr, &mut lr).await {
+                    session.record(&msg);
+                    tracing::info!(role = %role, from = %msg.from, kind = ?msg.kind, "handling");
+                    let result = {
+                        let mut agent = agent.lock().await;
+                        agent.handle(msg.clone(), &ctx).await
+                    };
+                    match result {
+                        Ok(AgentOutput::Dispatch(outs)) => {
+                            for out in outs {
+                                if let Err(e) = dispatcher.dispatch(out).await {
+                                    tracing::error!(?e, "dispatch failed");
+                                }
+                            }
+                        }
+                        Ok(AgentOutput::Done(payload)) => {
+                            tracing::info!(role = %role, "done");
+                            let _ = final_tx.send(payload);
+                        }
+                        Ok(AgentOutput::Blocked(reason)) => {
+                            tracing::warn!(role = %role, reason, "blocked");
+                            let blocker = msg.reply(
+                                role,
+                                Role::PM,
+                                agent_core::TaskKind::Blocker,
+                                serde_json::json!({"reason": reason}),
+                            );
+                            let _ = dispatcher.dispatch(blocker).await;
+                        }
+                        Err(e) => {
+                            tracing::error!(?e, role = %role, "agent error");
+                            let blocker = msg.reply(
+                                role,
+                                Role::PM,
+                                agent_core::TaskKind::Blocker,
+                                serde_json::json!({"reason": e.to_string()}),
+                            );
+                            let _ = dispatcher.dispatch(blocker).await;
+                        }
+                    }
+                }
+                tracing::info!(role = %role, "agent worker exiting");
+            });
+            handles.push(handle);
+        }
+        handles
+    }
+}
