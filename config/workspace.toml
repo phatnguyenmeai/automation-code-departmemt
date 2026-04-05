@@ -1,0 +1,17 @@
+[workspace]
+id = "dev-department-default"
+
+# Model choices per role. Allowed: opus | sonnet | haiku
+[models]
+pm = "opus"
+ba = "opus"
+dev = "sonnet"
+frontend = "sonnet"
+test_strategy = "opus"
+test_exec = "sonnet"
+
+[test]
+# Base URL used for integration tests and relative navigate() paths.
+base_url = "http://localhost:3000"
+# Set to false to skip UI scenarios entirely (useful in CI w/o a browser).
+enable_playwright = true
