@@ -38,7 +38,10 @@ calling the Playwright MCP server.
 | `gateway`    | `LaneQueue`, `Workspace`, `Session`, worker loop |
 | `mcp-client` | Stdio JSON-RPC MCP client + Playwright wrapper |
 | `agents`     | Concrete `PmAgent`, `BaAgent`, `DevAgent`, `FrontendAgent`, `TestAgent` |
-| `cli`        | `agentdept` binary |
+| `storage`    | `Storage` trait + SQLite backend for sessions, messages, and API keys |
+| `plugin`     | Tool, channel, and skill plugin system with registries |
+| `server`     | Always-on HTTP/WebSocket gateway, REST API, embedded dashboard |
+| `cli`        | `agentdept` binary (`run` and `serve` commands) |
 
 ### Pipeline
 
@@ -52,6 +55,37 @@ calling the Playwright MCP server.
    - *Execution phase*: `api` steps run via `reqwest`; `ui` steps drive
      Playwright MCP. Results summarized by Sonnet.
 6. **PM** aggregates the `TestReport` into a `FinalReport` (printed to stdout).
+
+### Server & Plugins
+
+The platform can run continuously as an always-on gateway:
+
+```bash
+agentdept serve --port 18789
+```
+
+- **REST API** — submit requirements (`POST /api/run`), query sessions, manage API keys
+- **WebSocket** — real-time pipeline event streaming at `/ws`
+- **Web Dashboard** — embedded UI at `/` with session browser, tool/skill registry
+- **Webhooks** — `/channels/{name}/webhook` for Slack, Discord, and other integrations
+- **Authentication** — API key auth (`agd_`-prefixed) with 4-tier RBAC: Admin, Operator, Viewer, Channel
+
+### Skills & Tools
+
+**Skills** are capability bundles (tools + system prompt) defined in `SKILL.md` files with TOML frontmatter:
+
+```toml
++++
+name = "api-tester"
+tools = ["http_request", "shell"]
+tags = ["testing", "api"]
++++
+You are an API testing specialist...
+```
+
+Built-in skills: `code-reviewer`, `api-tester` (see `skills/` directory).
+
+**Tools** are pluggable executables registered in the `ToolRegistry`. Built-in tools: `shell`, `file_read`, `file_write`, `http_request`.
 
 ## Quickstart
 
@@ -75,6 +109,18 @@ cargo build --release
 ```
 
 Skip browser tests (e.g. in CI without a display) with `--no-playwright`.
+
+### Always-on server mode
+
+```bash
+# Start the gateway server with REST API, WebSocket, and dashboard
+./target/release/agentdept serve --port 18789
+
+# Submit a requirement via API
+curl -H "Authorization: Bearer agd_..." \
+  -d '{"requirement":"Build a login page","base_url":"https://example.com"}' \
+  http://localhost:18789/api/run
+```
 
 ## Configuration
 
@@ -101,12 +147,18 @@ Allowed model aliases: `opus`, `sonnet`, `haiku`.
 
 ## Extending
 
-- Add a new agent: implement `agent_core::Agent` and add a `Role` variant.
-- Add a new test step action: extend `TestAgent::execute_step` in
+- **Add a new agent**: implement `agent_core::Agent` and add a `Role` variant.
+- **Add a new test step action**: extend `TestAgent::execute_step` in
   `crates/agents/src/test.rs` (current actions: `navigate`, `type`,
   `click`, `assert_text`, `http_get`, `http_post`).
-- Swap MCP server: replace the `launch()` command in
+- **Swap MCP server**: replace the `launch()` command in
   `crates/mcp-client/src/playwright.rs`.
+- **Add a tool**: implement `ToolPlugin` and register it in `ToolRegistry`
+  (or use `default_registry()` from `crates/plugin/src/builtin.rs`).
+- **Add a skill**: create a `SKILL.md` file in `skills/<name>/` with TOML
+  frontmatter specifying tools, tags, and a prompt template.
+- **Add a channel integration**: implement `ChannelPlugin` (parse inbound
+  webhooks → `ChannelEvent`, send replies) and register it with the server.
 
 ## Tests
 
