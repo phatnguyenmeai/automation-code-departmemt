@@ -88,26 +88,18 @@ These are areas where the current implementation is **more advanced** than OpenC
 
 ### Critical Gaps
 
-#### 1. No Persistence
+#### 1. ~~No Persistence~~ **RESOLVED**
 
-Sessions, transcripts, and all state are lost when the process exits.
+> **Implemented**: Added `crates/storage/` with `Storage` trait + SQLite backend.
+> Sessions and messages are persisted via `--db <path>` flag. The `Session` type
+> now supports fire-and-forget persistence on every `record()` call.
 
-- **Current**: `crates/gateway/src/session.rs` line 11 — `history: Arc<Mutex<Vec<TaskMessage>>>`
-- **OpenClaw**: SQLite with pluggable backends (vector stores, knowledge graphs)
-- **Impact**: Cannot analyze past runs, no audit trail, no learning from history
-- **Recommendation**: Add a `storage` crate with a `Storage` trait; implement SQLite
-  backend; persist sessions and task messages on every `record()` call
+#### 2. ~~No Session Recovery~~ **RESOLVED**
 
-#### 2. No Session Recovery
-
-Cannot resume interrupted pipelines or replay past sessions.
-
-- **Current**: `crates/gateway/src/workspace.rs` — `Workspace::new` always creates
-  fresh state
-- **OpenClaw**: Persistent sessions survive restarts
-- **Impact**: Long-running pipelines lost on crash; no way to inspect past results
-- **Recommendation**: Add session load/save to Workspace; enable
-  `--resume <session-id>` CLI flag
+> **Implemented**: Added `Workspace::resume()`, `Session::resume()`, and the
+> `agentdept resume --session-id <uuid>` CLI command. Also added
+> `agentdept sessions` to list past sessions with status, timestamps, and
+> original requirements.
 
 ### Major Gaps
 
@@ -202,7 +194,7 @@ Limited configuration flexibility — no per-session overrides.
 
 | Priority | Gap | Effort | Impact | Description |
 |---|---|---|---|---|
-| **P0** | Persistence | Medium | High | Add SQLite storage for sessions & messages |
+| **P0** | ~~Persistence~~ | ~~Medium~~ | ~~High~~ | **DONE** — `crates/storage/` with SQLite backend |
 | **P1** | LLM Provider Trait | Medium | High | Extract provider trait, add OpenAI support |
 | **P2** | HTTP Gateway Server | Medium | High | `serve` mode for always-on operation |
 | **P3** | Plugin Registry | High | High | Dynamic agent/tool loading without recompilation |

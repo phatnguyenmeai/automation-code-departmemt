@@ -6,6 +6,7 @@ members = [
     "crates/gateway",
     "crates/mcp-client",
     "crates/agents",
+    "crates/storage",
     "crates/cli",
 ]
 
@@ -29,3 +30,5 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4", features = ["derive"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 futures = "0.3"
+rusqlite = { version = "0.31", features = ["bundled"] }
+chrono = { version = "0.4", features = ["serde"] }
