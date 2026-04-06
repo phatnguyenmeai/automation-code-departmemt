@@ -1,6 +1,7 @@
 //! Embedded web UI dashboard.
 //!
 //! Serves a single-page HTML dashboard at `/` that provides:
+//! - Login screen when auth is enabled (API key stored in sessionStorage)
 //! - Real-time pipeline visualization via WebSocket
 //! - Session history browser
 //! - Tool and skill registry viewer
@@ -48,6 +49,12 @@ const DASHBOARD_HTML: &str = r##"<!DOCTYPE html>
               display: flex; align-items: center; gap: 1rem; }
     .header h1 { font-size: 1.25rem; color: #38bdf8; }
     .header .status { margin-left: auto; display: flex; align-items: center; gap: 0.5rem; }
+    .header .auth-info { display: flex; align-items: center; gap: 0.5rem; font-size: 0.8rem; color: #94a3b8; }
+    .header .auth-info .role-badge { background: #1d4ed8; color: #bfdbfe; padding: 0.125rem 0.5rem;
+                                      border-radius: 9999px; font-size: 0.7rem; font-weight: 600; }
+    .header .auth-info button { background: none; border: 1px solid #475569; color: #94a3b8;
+                                 padding: 0.25rem 0.5rem; border-radius: 4px; cursor: pointer; font-size: 0.75rem; }
+    .header .auth-info button:hover { border-color: #ef4444; color: #ef4444; }
     .dot { width: 8px; height: 8px; border-radius: 50%; }
     .dot.connected { background: #4ade80; }
     .dot.disconnected { background: #ef4444; }
@@ -83,48 +90,87 @@ const DASHBOARD_HTML: &str = r##"<!DOCTYPE html>
     .empty { color: #64748b; text-align: center; padding: 2rem; }
     .count { background: #475569; color: #e2e8f0; padding: 0.125rem 0.5rem; border-radius: 9999px;
              font-size: 0.7rem; }
+
+    /* Login overlay */
+    .login-overlay { position: fixed; inset: 0; background: #0f172a; display: flex;
+                     align-items: center; justify-content: center; z-index: 1000; }
+    .login-box { background: #1e293b; border: 1px solid #334155; border-radius: 12px;
+                 padding: 2.5rem; width: 100%; max-width: 420px; }
+    .login-box h2 { color: #38bdf8; margin-bottom: 0.5rem; }
+    .login-box p { color: #94a3b8; font-size: 0.875rem; margin-bottom: 1.5rem; }
+    .login-box input { width: 100%; padding: 0.75rem; background: #0f172a; border: 1px solid #475569;
+                        border-radius: 6px; color: #e2e8f0; font-size: 0.875rem; margin-bottom: 1rem;
+                        font-family: 'SF Mono', Monaco, monospace; }
+    .login-box input:focus { outline: none; border-color: #38bdf8; }
+    .login-box button { width: 100%; padding: 0.75rem; background: #2563eb; color: white; border: none;
+                         border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 0.9rem; }
+    .login-box button:hover { background: #1d4ed8; }
+    .login-box .error { color: #ef4444; font-size: 0.8rem; margin-bottom: 1rem; display: none; }
+    .login-box .skip { text-align: center; margin-top: 1rem; }
+    .login-box .skip a { color: #64748b; font-size: 0.8rem; cursor: pointer; text-decoration: underline; }
+    .login-box .skip a:hover { color: #94a3b8; }
   </style>
 </head>
 <body>
-  <div class="header">
-    <h1>AgentDept Gateway</h1>
-    <div class="status">
-      <span class="dot disconnected" id="ws-dot"></span>
-      <span id="ws-status">Connecting...</span>
+  <!-- Login overlay (hidden if auth not needed) -->
+  <div class="login-overlay" id="login-overlay" style="display:none">
+    <div class="login-box">
+      <h2>AgentDept Gateway</h2>
+      <p>Enter your API key to access the dashboard. Keys are created with <code>POST /api/keys</code> using an admin key.</p>
+      <div class="error" id="login-error"></div>
+      <input type="password" id="login-key" placeholder="agd_..." autocomplete="off" />
+      <button onclick="doLogin()">Sign In</button>
+      <div class="skip"><a onclick="skipLogin()">Continue without authentication</a></div>
     </div>
   </div>
 
-  <div class="submit-form">
-    <input type="text" id="requirement-input" placeholder="Enter a requirement (e.g., Build a login page with email + password)..." />
-    <button onclick="submitRequirement()">Submit</button>
-  </div>
-
-  <div class="container">
-    <div class="card">
-      <div class="card-header">Live Events <span class="count" id="event-count">0</span></div>
-      <div class="card-body" id="events-list">
-        <div class="empty">No events yet. Submit a requirement or wait for activity.</div>
+  <!-- Main app -->
+  <div id="app" style="display:none">
+    <div class="header">
+      <h1>AgentDept Gateway</h1>
+      <div class="auth-info" id="auth-info" style="display:none">
+        <span id="auth-label"></span>
+        <span class="role-badge" id="auth-role"></span>
+        <button onclick="doLogout()">Logout</button>
+      </div>
+      <div class="status">
+        <span class="dot disconnected" id="ws-dot"></span>
+        <span id="ws-status">Connecting...</span>
       </div>
     </div>
 
-    <div class="card">
-      <div class="card-header">Sessions <span class="count" id="session-count">0</span></div>
-      <div class="card-body" id="sessions-list">
-        <div class="empty">Loading...</div>
-      </div>
+    <div class="submit-form">
+      <input type="text" id="requirement-input" placeholder="Enter a requirement (e.g., Build a login page with email + password)..." />
+      <button onclick="submitRequirement()">Submit</button>
     </div>
 
-    <div class="card">
-      <div class="card-header">Tools <span class="count" id="tool-count">0</span></div>
-      <div class="card-body" id="tools-list">
-        <div class="empty">Loading...</div>
+    <div class="container">
+      <div class="card">
+        <div class="card-header">Live Events <span class="count" id="event-count">0</span></div>
+        <div class="card-body" id="events-list">
+          <div class="empty">No events yet. Submit a requirement or wait for activity.</div>
+        </div>
       </div>
-    </div>
 
-    <div class="card">
-      <div class="card-header">Skills <span class="count" id="skill-count">0</span></div>
-      <div class="card-body" id="skills-list">
-        <div class="empty">Loading...</div>
+      <div class="card">
+        <div class="card-header">Sessions <span class="count" id="session-count">0</span></div>
+        <div class="card-body" id="sessions-list">
+          <div class="empty">Loading...</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">Tools <span class="count" id="tool-count">0</span></div>
+        <div class="card-body" id="tools-list">
+          <div class="empty">Loading...</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">Skills <span class="count" id="skill-count">0</span></div>
+        <div class="card-body" id="skills-list">
+          <div class="empty">Loading...</div>
+        </div>
       </div>
     </div>
   </div>
@@ -135,13 +181,156 @@ const DASHBOARD_HTML: &str = r##"<!DOCTYPE html>
 "##;
 
 const APP_JS: &str = r##"
-// WebSocket connection
+// ─── Auth State ───
+
+function getApiKey() {
+  return sessionStorage.getItem('agentdept_api_key') || '';
+}
+
+function setApiKey(key) {
+  if (key) {
+    sessionStorage.setItem('agentdept_api_key', key);
+  } else {
+    sessionStorage.removeItem('agentdept_api_key');
+  }
+}
+
+// Add auth header to fetch requests.
+function authHeaders(extra = {}) {
+  const key = getApiKey();
+  const headers = { ...extra };
+  if (key) {
+    headers['Authorization'] = `Bearer ${key}`;
+  }
+  return headers;
+}
+
+// ─── Login Flow ───
+
+async function checkAuthRequired() {
+  // Try hitting /api/health (public) then /api/auth/me to see if auth is enforced.
+  try {
+    const resp = await fetch('/api/auth/me', { headers: authHeaders() });
+    if (resp.status === 401) {
+      // Auth is enabled and we have no valid key.
+      if (!getApiKey()) {
+        showLogin();
+        return;
+      }
+    }
+    if (resp.ok) {
+      const data = await resp.json();
+      showApp(data);
+      return;
+    }
+  } catch {}
+  // If /api/auth/me fails for any reason, just show the app (auth might be disabled).
+  showApp(null);
+}
+
+function showLogin() {
+  document.getElementById('login-overlay').style.display = 'flex';
+  document.getElementById('app').style.display = 'none';
+  document.getElementById('login-key').focus();
+}
+
+function showApp(authData) {
+  document.getElementById('login-overlay').style.display = 'none';
+  document.getElementById('app').style.display = 'block';
+
+  if (authData && authData.role) {
+    document.getElementById('auth-info').style.display = 'flex';
+    document.getElementById('auth-label').textContent = authData.label || '';
+    document.getElementById('auth-role').textContent = authData.role;
+  } else if (getApiKey()) {
+    document.getElementById('auth-info').style.display = 'flex';
+    document.getElementById('auth-label').textContent = 'authenticated';
+    document.getElementById('auth-role').textContent = '?';
+  }
+
+  initApp();
+}
+
+async function doLogin() {
+  const input = document.getElementById('login-key');
+  const key = input.value.trim();
+  const errorEl = document.getElementById('login-error');
+
+  if (!key) {
+    errorEl.textContent = 'Please enter an API key.';
+    errorEl.style.display = 'block';
+    return;
+  }
+
+  // Validate the key by calling /api/auth/me.
+  try {
+    const resp = await fetch('/api/auth/me', {
+      headers: { 'Authorization': `Bearer ${key}` },
+    });
+
+    if (resp.ok) {
+      const data = await resp.json();
+      setApiKey(key);
+      errorEl.style.display = 'none';
+      showApp(data);
+    } else if (resp.status === 401) {
+      errorEl.textContent = 'Invalid or expired API key.';
+      errorEl.style.display = 'block';
+    } else {
+      const body = await resp.json().catch(() => ({}));
+      errorEl.textContent = body.error || `Error: ${resp.status}`;
+      errorEl.style.display = 'block';
+    }
+  } catch (err) {
+    errorEl.textContent = `Connection error: ${err.message}`;
+    errorEl.style.display = 'block';
+  }
+}
+
+function skipLogin() {
+  setApiKey('');
+  showApp(null);
+}
+
+function doLogout() {
+  setApiKey('');
+  document.getElementById('auth-info').style.display = 'none';
+  // Check if auth is required; if so, show login again.
+  checkAuthRequired();
+}
+
+// Enter key on login input.
+document.getElementById('login-key').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') doLogin();
+});
+
+// ─── Main App ───
+
 let ws = null;
 let eventCount = 0;
+let appInitialized = false;
+
+function initApp() {
+  if (appInitialized) return;
+  appInitialized = true;
+
+  connectWs();
+  loadSessions();
+  loadTools();
+  loadSkills();
+  setInterval(loadSessions, 10000);
+
+  document.getElementById('requirement-input').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') submitRequirement();
+  });
+}
 
 function connectWs() {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  ws = new WebSocket(`${proto}//${location.host}/ws`);
+  // Pass API key as query param for WebSocket (can't set headers on WS).
+  const key = getApiKey();
+  const params = key ? `?api_key=${encodeURIComponent(key)}` : '';
+  ws = new WebSocket(`${proto}//${location.host}/ws${params}`);
 
   ws.onopen = () => {
     document.getElementById('ws-dot').className = 'dot connected';
@@ -175,7 +364,6 @@ function addEvent(data) {
   el.innerHTML = `<span class="time">${time}</span><span class="type">${type_}</span>${JSON.stringify(data.data || data.message || data).substring(0, 200)}`;
   list.prepend(el);
 
-  // Keep max 100 events
   while (list.children.length > 100) list.removeChild(list.lastChild);
 }
 
@@ -187,9 +375,14 @@ async function submitRequirement() {
   try {
     const resp = await fetch('/api/run', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ requirement: text }),
     });
+    if (resp.status === 401) { showLogin(); return; }
+    if (resp.status === 403) {
+      addEvent({ event_type: 'error', data: { message: 'Insufficient permissions (need operator role)' } });
+      return;
+    }
     const data = await resp.json();
     addEvent({ event_type: 'submitted', data });
     input.value = '';
@@ -201,7 +394,8 @@ async function submitRequirement() {
 
 async function loadSessions() {
   try {
-    const resp = await fetch('/api/sessions?limit=20');
+    const resp = await fetch('/api/sessions?limit=20', { headers: authHeaders() });
+    if (resp.status === 401) return;
     const data = await resp.json();
     const list = document.getElementById('sessions-list');
     document.getElementById('session-count').textContent = data.count;
@@ -222,7 +416,8 @@ async function loadSessions() {
 
 async function loadTools() {
   try {
-    const resp = await fetch('/api/tools');
+    const resp = await fetch('/api/tools', { headers: authHeaders() });
+    if (resp.status === 401) return;
     const data = await resp.json();
     const list = document.getElementById('tools-list');
     document.getElementById('tool-count').textContent = data.count;
@@ -243,7 +438,8 @@ async function loadTools() {
 
 async function loadSkills() {
   try {
-    const resp = await fetch('/api/skills');
+    const resp = await fetch('/api/skills', { headers: authHeaders() });
+    if (resp.status === 401) return;
     const data = await resp.json();
     const list = document.getElementById('skills-list');
     document.getElementById('skill-count').textContent = data.count;
@@ -262,17 +458,8 @@ async function loadSkills() {
   } catch {}
 }
 
-// Enter key to submit
-document.getElementById('requirement-input').addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') submitRequirement();
-});
+// ─── Boot ───
 
-// Initialize
-connectWs();
-loadSessions();
-loadTools();
-loadSkills();
-
-// Refresh sessions periodically
-setInterval(loadSessions, 10000);
+// Start by checking if auth is required.
+checkAuthRequired();
 "##;
