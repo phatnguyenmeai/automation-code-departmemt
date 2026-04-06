@@ -174,6 +174,7 @@ async fn get_session(
             "from": m.from.as_str(),
             "to": m.to.as_str(),
             "kind": serde_json::to_value(&m.kind).unwrap_or_default(),
+            "payload": &m.payload,
             "priority": serde_json::to_value(&m.priority).unwrap_or_default(),
         })).collect::<Vec<_>>(),
         "message_count": messages.len(),
