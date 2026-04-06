@@ -71,6 +71,11 @@ enum Cmd {
         /// Directory containing skill definitions (SKILL.md files).
         #[arg(long, default_value = "skills")]
         skills_dir: PathBuf,
+        /// Admin API key to bootstrap. Enables authentication.
+        /// If omitted, the server runs without auth (all requests are admin).
+        /// Can also be set via AGENTDEPT_ADMIN_KEY env var.
+        #[arg(long, env = "AGENTDEPT_ADMIN_KEY")]
+        admin_key: Option<String>,
     },
 }
 
@@ -151,7 +156,8 @@ async fn main() -> Result<()> {
             port,
             db,
             skills_dir,
-        } => serve(port, db, skills_dir).await,
+            admin_key,
+        } => serve(port, db, skills_dir, admin_key).await,
     }
 }
 
@@ -416,7 +422,7 @@ async fn list_sessions(db_path: PathBuf, limit: usize) -> Result<()> {
     Ok(())
 }
 
-async fn serve(port: u16, db_path: PathBuf, skills_dir: PathBuf) -> Result<()> {
+async fn serve(port: u16, db_path: PathBuf, skills_dir: PathBuf, admin_key: Option<String>) -> Result<()> {
     let storage = open_storage(&db_path)?;
 
     // Initialize tool registry with built-in tools.
@@ -437,13 +443,28 @@ async fn serve(port: u16, db_path: PathBuf, skills_dir: PathBuf) -> Result<()> {
     // No channel plugins registered by default — users can add them via the plugin system.
     let channels = HashMap::new();
 
-    let state = server::state::AppState::new(storage, tool_registry, skill_registry, channels);
+    let mut state = server::state::AppState::new(storage.clone(), tool_registry, skill_registry, channels);
+
+    // Bootstrap admin key and enable auth if provided.
+    if let Some(ref key) = admin_key {
+        server::auth::bootstrap_admin_key(&storage, key)
+            .await
+            .map_err(|e| anyhow::anyhow!("bootstrap admin key: {e}"))?;
+        state = state.with_auth();
+        eprintln!("Authentication ENABLED (admin key configured)");
+    } else {
+        eprintln!("Authentication DISABLED (no --admin-key provided)");
+    }
 
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
     eprintln!("AgentDept Gateway starting on http://0.0.0.0:{port}");
     eprintln!("  Dashboard: http://localhost:{port}/");
     eprintln!("  API:       http://localhost:{port}/api/health");
     eprintln!("  WebSocket: ws://localhost:{port}/ws");
+    if state.auth_enabled {
+        eprintln!("  Auth:      Bearer token required for /api/* and /ws");
+        eprintln!("  Create keys: POST /api/keys (with admin key)");
+    }
 
     server::serve(state, addr)
         .await

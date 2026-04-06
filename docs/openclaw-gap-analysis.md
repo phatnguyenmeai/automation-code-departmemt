@@ -124,14 +124,13 @@ Locked to Anthropic Claude — no fallback, no cost optimization, no offline mod
 > endpoints (POST /api/run, GET /api/sessions, etc.), WebSocket real-time events at
 > /ws, and webhook endpoints at /channels/{name}/webhook for channel integrations.
 
-#### 6. No Authentication / Access Control
+#### 6. ~~No Authentication / Access Control~~ **RESOLVED**
 
-Anyone with process access can run anything — unsuitable for shared deployments.
-
-- **Current**: Only `ANTHROPIC_API_KEY` env var
-- **OpenClaw**: User management, channel authentication, access controls
-- **Recommendation**: Add API key/token auth to the gateway HTTP server; role-based
-  access for different operations
+> **Implemented**: API key authentication with 4-tier role-based access control
+> (admin, operator, viewer, channel). Keys stored as SHA-256 hashes in SQLite.
+> Auth middleware on all API/WS/channel routes. Key management API (create, list,
+> revoke). Bootstrap via `--admin-key` flag or `AGENTDEPT_ADMIN_KEY` env var.
+> Runs without auth when no admin key is configured (backward compatible).
 
 #### 7. ~~No Always-On Mode~~ **RESOLVED**
 
@@ -181,7 +180,7 @@ Limited configuration flexibility — no per-session overrides.
 | **P1** | LLM Provider Trait | Medium | High | Extract provider trait, add OpenAI support |
 | **P2** | ~~HTTP Gateway Server~~ | ~~Medium~~ | ~~High~~ | **DONE** — `crates/server/` with axum |
 | **P3** | ~~Plugin Registry~~ | ~~High~~ | ~~High~~ | **DONE** — `crates/plugin/` with ToolPlugin + ChannelPlugin |
-| **P4** | Authentication | Low–Medium | Medium | API key/token auth + role-based access |
+| **P4** | ~~Authentication~~ | ~~Low–Medium~~ | ~~Medium~~ | **DONE** — API key auth + 4-tier RBAC |
 | **P5** | ~~Channel Adapters~~ | ~~Medium~~ | ~~Medium~~ | **DONE** — webhook endpoints at /channels/{name}/webhook |
 | **P6** | ~~Skills Manifest~~ | ~~Medium~~ | ~~Medium~~ | **DONE** — SKILL.md loading + registry |
 | **P7** | ~~Web UI~~ | ~~Medium~~ | ~~Low~~ | **DONE** — embedded dashboard at / |
