@@ -7,6 +7,8 @@ members = [
     "crates/mcp-client",
     "crates/agents",
     "crates/storage",
+    "crates/plugin",
+    "crates/server",
     "crates/cli",
 ]
 
@@ -32,3 +34,5 @@ uuid = { version = "1", features = ["v4", "serde"] }
 futures = "0.3"
 rusqlite = { version = "0.31", features = ["bundled"] }
 chrono = { version = "0.4", features = ["serde"] }
+axum = { version = "0.7", features = ["ws"] }
+tower-http = { version = "0.6", features = ["cors"] }

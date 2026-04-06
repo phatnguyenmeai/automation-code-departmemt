@@ -112,24 +112,17 @@ Locked to Anthropic Claude — no fallback, no cost optimization, no offline mod
 - **Recommendation**: Extract an `LlmProvider` trait in `agent-core`; refactor
   `llm-claude` to implement it; add `llm-openai` crate
 
-#### 4. No Plugin System
+#### 4. ~~No Plugin System~~ **RESOLVED**
 
-All agents and tools are hardcoded — extending requires recompilation.
+> **Implemented**: New `crates/plugin/` with `ToolPlugin` trait, `ChannelPlugin` trait,
+> `ToolRegistry`, and `SkillRegistry`. Built-in tools: shell, file_read, file_write,
+> http_request. Skills loaded from SKILL.md manifests with TOML frontmatter.
 
-- **Current**: `crates/gateway/src/workspace.rs` — `spawn_workers` takes a fixed
-  `Vec<Box<dyn Agent>>`
-- **OpenClaw**: 4 plugin types dynamically loaded at runtime
-- **Recommendation**: Define plugin manifest format; add dynamic agent/tool loading
-  via `libloading` or WASM
+#### 5. ~~CLI-Only Interface~~ **RESOLVED**
 
-#### 5. CLI-Only Interface
-
-No way to receive input from messaging platforms or web.
-
-- **Current**: `crates/cli/` is the only input method
-- **OpenClaw**: 50+ messaging channels
-- **Recommendation**: Add an HTTP/WebSocket server to the gateway for programmatic
-  access; build channel adapters (Slack, Discord first)
+> **Implemented**: New `crates/server/` with axum HTTP/WebSocket server. REST API
+> endpoints (POST /api/run, GET /api/sessions, etc.), WebSocket real-time events at
+> /ws, and webhook endpoints at /channels/{name}/webhook for channel integrations.
 
 #### 6. No Authentication / Access Control
 
@@ -140,41 +133,31 @@ Anyone with process access can run anything — unsuitable for shared deployment
 - **Recommendation**: Add API key/token auth to the gateway HTTP server; role-based
   access for different operations
 
-#### 7. No Always-On Mode
+#### 7. ~~No Always-On Mode~~ **RESOLVED**
 
-Process exits after a single pipeline run.
+> **Implemented**: `agentdept serve --port 18789` keeps the gateway running
+> continuously, accepting new tasks via REST API and WebSocket. Matches OpenClaw's
+> default port convention.
 
-- **Current**: `crates/cli/src/main.rs` — runs once, exits
-- **OpenClaw**: Continuous background service
-- **Recommendation**: Add a `serve` subcommand that keeps the gateway running,
-  accepting new tasks via HTTP/WebSocket
+#### 8. ~~Limited Tool Ecosystem~~ **RESOLVED**
 
-#### 8. Limited Tool Ecosystem
+> **Implemented**: `ToolRegistry` in `crates/plugin/` with 4 built-in tools
+> (shell, file_read, file_write, http_request). New tools can be added by
+> implementing the `ToolPlugin` trait. Tools are listed via GET /api/tools.
 
-Only Playwright MCP + reqwest — agents cannot interact with files, shell, or
-other services.
+#### 9. ~~No Skills/Capability Registry~~ **RESOLVED**
 
-- **Current**: `crates/mcp-client/`, `crates/agents/src/test.rs`
-- **OpenClaw**: Bash, browser, file ops, canvas, scheduled jobs + extensible plugins
-- **Recommendation**: Add a `ToolRegistry` with pluggable tools (file ops, shell,
-  additional MCP servers)
-
-#### 9. No Skills/Capability Registry
-
-Agent behaviors are hardcoded in Rust — changing the pipeline requires code changes.
-
-- **Current**: Pipeline is fixed: PM → BA → Dev/FE → Test
-- **OpenClaw**: Skills as SKILL.md directories, ClawHub registry
-- **Recommendation**: Define skills as configuration; allow new pipelines without
-  recompilation
+> **Implemented**: `SkillRegistry` loads SKILL.md manifests from a configurable
+> directory. Each skill declares tools, tags, and a prompt template. Skills are
+> listed via GET /api/skills. Two sample skills included (api-tester, code-reviewer).
 
 ### Minor Gaps
 
-#### 10. No Web UI
+#### 10. ~~No Web UI~~ **RESOLVED**
 
-All interaction is via terminal — limited visibility into pipeline state.
-
-- **Recommendation**: Add a lightweight web dashboard (axum + htmx or SPA)
+> **Implemented**: Embedded dashboard at `/` with real-time WebSocket event stream,
+> session browser, tool registry viewer, skill registry viewer, and requirement
+> submission form. Dark theme, no external dependencies.
 
 #### 11. No Scheduled Jobs
 
@@ -196,12 +179,12 @@ Limited configuration flexibility — no per-session overrides.
 |---|---|---|---|---|
 | **P0** | ~~Persistence~~ | ~~Medium~~ | ~~High~~ | **DONE** — `crates/storage/` with SQLite backend |
 | **P1** | LLM Provider Trait | Medium | High | Extract provider trait, add OpenAI support |
-| **P2** | HTTP Gateway Server | Medium | High | `serve` mode for always-on operation |
-| **P3** | Plugin Registry | High | High | Dynamic agent/tool loading without recompilation |
+| **P2** | ~~HTTP Gateway Server~~ | ~~Medium~~ | ~~High~~ | **DONE** — `crates/server/` with axum |
+| **P3** | ~~Plugin Registry~~ | ~~High~~ | ~~High~~ | **DONE** — `crates/plugin/` with ToolPlugin + ChannelPlugin |
 | **P4** | Authentication | Low–Medium | Medium | API key/token auth + role-based access |
-| **P5** | Channel Adapters | Medium | Medium | Slack + Discord first |
-| **P6** | Skills Manifest | Medium | Medium | Configurable pipelines via SKILL.md |
-| **P7** | Web UI | Medium | Low | Dashboard for visibility and control |
+| **P5** | ~~Channel Adapters~~ | ~~Medium~~ | ~~Medium~~ | **DONE** — webhook endpoints at /channels/{name}/webhook |
+| **P6** | ~~Skills Manifest~~ | ~~Medium~~ | ~~Medium~~ | **DONE** — SKILL.md loading + registry |
+| **P7** | ~~Web UI~~ | ~~Medium~~ | ~~Low~~ | **DONE** — embedded dashboard at / |
 
 ---
 

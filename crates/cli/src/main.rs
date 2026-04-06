@@ -6,7 +6,9 @@ use gateway::storage::sqlite::SqliteStorage;
 use gateway::storage::{SessionStatus, Storage};
 use gateway::{Gateway, Workspace};
 use llm_claude::{ClaudeClient, ClaudeModel};
+use plugin::builtin;
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -57,6 +59,18 @@ enum Cmd {
         /// Maximum number of sessions to display.
         #[arg(long, default_value_t = 20)]
         limit: usize,
+    },
+    /// Start the always-on gateway server (HTTP + WebSocket + Web UI).
+    Serve {
+        /// Port to listen on.
+        #[arg(long, default_value_t = 18789)]
+        port: u16,
+        /// Path to the SQLite database.
+        #[arg(long, default_value = "data/sessions.db")]
+        db: PathBuf,
+        /// Directory containing skill definitions (SKILL.md files).
+        #[arg(long, default_value = "skills")]
+        skills_dir: PathBuf,
     },
 }
 
@@ -133,6 +147,11 @@ async fn main() -> Result<()> {
             db,
         } => resume(session_id, config, base_url, no_playwright, db).await,
         Cmd::Sessions { db, limit } => list_sessions(db, limit).await,
+        Cmd::Serve {
+            port,
+            db,
+            skills_dir,
+        } => serve(port, db, skills_dir).await,
     }
 }
 
@@ -395,4 +414,38 @@ async fn list_sessions(db_path: PathBuf, limit: usize) -> Result<()> {
     }
     println!("\n{} session(s) total.", sessions.len());
     Ok(())
+}
+
+async fn serve(port: u16, db_path: PathBuf, skills_dir: PathBuf) -> Result<()> {
+    let storage = open_storage(&db_path)?;
+
+    // Initialize tool registry with built-in tools.
+    let tool_registry = builtin::default_registry();
+    tracing::info!(tools = ?tool_registry.list(), "tool registry initialized");
+
+    // Load skills from directory.
+    let mut skill_registry = plugin::SkillRegistry::new();
+    if skills_dir.exists() {
+        let count = skill_registry
+            .load_dir(&skills_dir)
+            .map_err(|e| anyhow::anyhow!("load skills: {e}"))?;
+        tracing::info!(count, dir = %skills_dir.display(), "skills loaded");
+    } else {
+        tracing::info!(dir = %skills_dir.display(), "skills directory not found, skipping");
+    }
+
+    // No channel plugins registered by default — users can add them via the plugin system.
+    let channels = HashMap::new();
+
+    let state = server::state::AppState::new(storage, tool_registry, skill_registry, channels);
+
+    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
+    eprintln!("AgentDept Gateway starting on http://0.0.0.0:{port}");
+    eprintln!("  Dashboard: http://localhost:{port}/");
+    eprintln!("  API:       http://localhost:{port}/api/health");
+    eprintln!("  WebSocket: ws://localhost:{port}/ws");
+
+    server::serve(state, addr)
+        .await
+        .map_err(|e| anyhow::anyhow!("server: {e}"))
 }
