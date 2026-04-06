@@ -28,3 +28,6 @@ target
 # Logs
 *.log
 
+# Session database (generated at runtime)
+data/
+

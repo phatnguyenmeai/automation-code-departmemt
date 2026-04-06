@@ -11,6 +11,9 @@ path = "src/main.rs"
 [dependencies]
 agent-core = { path = "../agent-core" }
 gateway = { path = "../gateway" }
+storage = { path = "../storage" }
+plugin = { path = "../plugin" }
+server = { path = "../server" }
 llm-claude = { path = "../llm-claude" }
 agents = { path = "../agents" }
 tokio.workspace = true
@@ -21,3 +24,4 @@ toml.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+uuid.workspace = true

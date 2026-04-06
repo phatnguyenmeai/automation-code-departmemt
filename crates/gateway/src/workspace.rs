@@ -6,6 +6,7 @@ use agent_core::{
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
+use storage::Storage;
 use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinHandle;
 
@@ -16,10 +17,35 @@ pub struct Workspace {
 }
 
 impl Workspace {
+    /// Create a new workspace with an ephemeral (in-memory only) session.
     pub fn new(id: impl Into<String>) -> Self {
         let id = id.into();
         let session = Session::new(id.clone());
         Self { id, session }
+    }
+
+    /// Create a new workspace backed by persistent storage.
+    ///
+    /// Follows OpenClaw's pattern: every session is persisted so it can be
+    /// inspected later or resumed after interruption.
+    pub fn with_storage(id: impl Into<String>, storage: Arc<dyn Storage>) -> Self {
+        let id = id.into();
+        let session = Session::with_storage(id.clone(), storage);
+        Self { id, session }
+    }
+
+    /// Resume an existing session from storage.
+    ///
+    /// Loads the session metadata and full message history from the storage
+    /// backend, allowing a previously interrupted pipeline to be inspected
+    /// or continued.
+    pub async fn resume(
+        session_id: uuid::Uuid,
+        storage: Arc<dyn Storage>,
+    ) -> Result<Self, storage::StorageError> {
+        let session = Session::resume(session_id, storage).await?;
+        let id = session.workspace_id.clone();
+        Ok(Self { id, session })
     }
 }
 

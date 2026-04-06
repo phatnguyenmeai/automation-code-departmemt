@@ -1,17 +1,19 @@
 [package]
-name = "gateway"
+name = "server"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
 agent-core = { path = "../agent-core" }
+gateway = { path = "../gateway" }
 storage = { path = "../storage" }
+plugin = { path = "../plugin" }
 tokio.workspace = true
 async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-thiserror.workspace = true
 tracing.workspace = true
-futures.workspace = true
 uuid.workspace = true
+axum = { version = "0.7", features = ["ws"] }
+tower-http = { version = "0.6", features = ["cors"] }
