@@ -91,6 +91,62 @@ const DASHBOARD_HTML: &str = r##"<!DOCTYPE html>
     .count { background: #475569; color: #e2e8f0; padding: 0.125rem 0.5rem; border-radius: 9999px;
              font-size: 0.7rem; }
 
+    /* Session detail overlay */
+    .detail-overlay { position: fixed; inset: 0; background: rgba(15,23,42,0.85); z-index: 900;
+                      display: flex; align-items: center; justify-content: center; }
+    .detail-panel { background: #1e293b; border: 1px solid #334155; border-radius: 12px;
+                    width: 95%; max-width: 900px; max-height: 90vh; display: flex; flex-direction: column; }
+    .detail-header { display: flex; align-items: center; justify-content: space-between;
+                     padding: 1rem 1.5rem; border-bottom: 1px solid #334155; }
+    .detail-header h2 { font-size: 1rem; color: #38bdf8; }
+    .detail-header .close-btn { background: none; border: 1px solid #475569; color: #94a3b8;
+                                 padding: 0.25rem 0.75rem; border-radius: 4px; cursor: pointer; font-size: 0.85rem; }
+    .detail-header .close-btn:hover { border-color: #ef4444; color: #ef4444; }
+    .detail-meta { padding: 0.75rem 1.5rem; background: #0f172a; font-size: 0.8rem; color: #94a3b8;
+                   display: flex; gap: 1.5rem; flex-wrap: wrap; }
+    .detail-meta span { display: flex; align-items: center; gap: 0.35rem; }
+    .detail-body { padding: 1rem 1.5rem; overflow-y: auto; flex: 1; }
+
+    /* Agent role badges */
+    .role-pill { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 9999px;
+                 font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; }
+    .role-pm { background: #7c3aed; color: #ede9fe; }
+    .role-ba { background: #0891b2; color: #cffafe; }
+    .role-dev { background: #059669; color: #d1fae5; }
+    .role-frontend { background: #d97706; color: #fef3c7; }
+    .role-test { background: #dc2626; color: #fee2e2; }
+
+    /* Message card in detail view */
+    .msg-card { background: #0f172a; border: 1px solid #334155; border-radius: 6px;
+                padding: 0.75rem 1rem; margin-bottom: 0.75rem; }
+    .msg-card-header { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem; font-size: 0.8rem; }
+    .msg-card-header .arrow { color: #64748b; }
+    .msg-card-header .kind-badge { background: #334155; color: #cbd5e1; padding: 0.1rem 0.4rem;
+                                    border-radius: 4px; font-size: 0.7rem; font-family: monospace; }
+    .msg-card-header .priority-badge { font-size: 0.65rem; padding: 0.1rem 0.35rem; border-radius: 4px; }
+    .msg-card-header .priority-badge.high { background: #991b1b; color: #fecaca; }
+    .msg-card-header .priority-badge.low { background: #1e3a5f; color: #93c5fd; }
+    .msg-card-body { font-size: 0.8rem; color: #cbd5e1; font-family: 'SF Mono', Monaco, monospace;
+                     white-space: pre-wrap; word-break: break-word; max-height: 200px; overflow-y: auto;
+                     background: #1e293b; border-radius: 4px; padding: 0.5rem; }
+    .msg-card-body.collapsed { max-height: 80px; cursor: pointer; position: relative; }
+    .msg-card-body.collapsed::after { content: 'click to expand'; position: absolute; bottom: 0; left: 0; right: 0;
+                                       text-align: center; padding: 0.5rem 0 0.25rem; font-family: sans-serif;
+                                       background: linear-gradient(transparent, #1e293b); color: #64748b; font-size: 0.7rem; }
+
+    /* Agent summary cards */
+    .agent-summary { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem; }
+    .agent-chip { display: flex; align-items: center; gap: 0.35rem; padding: 0.35rem 0.65rem;
+                  background: #0f172a; border: 1px solid #334155; border-radius: 6px; font-size: 0.75rem; }
+    .agent-chip .chip-count { color: #64748b; }
+
+    /* Filter tabs */
+    .filter-tabs { display: flex; gap: 0.25rem; margin-bottom: 0.75rem; flex-wrap: wrap; }
+    .filter-tab { padding: 0.3rem 0.6rem; border-radius: 4px; border: 1px solid #334155;
+                  background: transparent; color: #94a3b8; cursor: pointer; font-size: 0.75rem; }
+    .filter-tab:hover { border-color: #475569; color: #e2e8f0; }
+    .filter-tab.active { background: #334155; color: #e2e8f0; border-color: #475569; }
+
     /* Login overlay */
     .login-overlay { position: fixed; inset: 0; background: #0f172a; display: flex;
                      align-items: center; justify-content: center; z-index: 1000; }
@@ -171,6 +227,20 @@ const DASHBOARD_HTML: &str = r##"<!DOCTYPE html>
         <div class="card-body" id="skills-list">
           <div class="empty">Loading...</div>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Session detail overlay -->
+  <div class="detail-overlay" id="detail-overlay" style="display:none" onclick="if(event.target===this)closeDetail()">
+    <div class="detail-panel">
+      <div class="detail-header">
+        <h2 id="detail-title">Session Detail</h2>
+        <button class="close-btn" onclick="closeDetail()">Close</button>
+      </div>
+      <div class="detail-meta" id="detail-meta"></div>
+      <div class="detail-body" id="detail-body">
+        <div class="empty">Loading...</div>
       </div>
     </div>
   </div>
@@ -406,7 +476,7 @@ async function loadSessions() {
     }
 
     list.innerHTML = data.sessions.map(s => `
-      <div class="session-row">
+      <div class="session-row" onclick="openSessionDetail('${s.id}')">
         <div class="id">${s.id} <span class="badge ${s.status}">${s.status}</span></div>
         <div class="meta">${s.requirement ? s.requirement.substring(0, 80) : '-'}</div>
       </div>
@@ -456,6 +526,173 @@ async function loadSkills() {
       </div>
     `).join('');
   } catch {}
+}
+
+// ─── Session Detail ───
+
+const ROLE_COLORS = { pm: 'role-pm', ba: 'role-ba', dev: 'role-dev', frontend: 'role-frontend', test: 'role-test' };
+const ROLE_LABELS = { pm: 'PM', ba: 'BA', dev: 'Dev', frontend: 'Frontend', test: 'Test' };
+
+function rolePill(role) {
+  const cls = ROLE_COLORS[role] || '';
+  const label = ROLE_LABELS[role] || role;
+  return `<span class="role-pill ${cls}">${label}</span>`;
+}
+
+function kindLabel(kind) {
+  if (!kind) return 'unknown';
+  // kind comes as {kind: "requirement"} or similar tagged enum
+  if (typeof kind === 'object') return kind.kind || JSON.stringify(kind);
+  return kind;
+}
+
+let currentFilter = 'all';
+
+function openSessionDetail(id) {
+  document.getElementById('detail-overlay').style.display = 'flex';
+  document.getElementById('detail-body').innerHTML = '<div class="empty">Loading...</div>';
+  document.getElementById('detail-meta').innerHTML = '';
+  document.getElementById('detail-title').textContent = 'Session Detail';
+  currentFilter = 'all';
+  loadSessionDetail(id);
+}
+
+function closeDetail() {
+  document.getElementById('detail-overlay').style.display = 'none';
+}
+
+// Close on Escape key
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeDetail();
+});
+
+async function loadSessionDetail(id) {
+  try {
+    const resp = await fetch(`/api/sessions/${id}`, { headers: authHeaders() });
+    if (resp.status === 401) { showLogin(); return; }
+    if (!resp.ok) {
+      document.getElementById('detail-body').innerHTML = `<div class="empty">Error loading session: ${resp.status}</div>`;
+      return;
+    }
+    const data = await resp.json();
+    renderSessionDetail(data);
+  } catch (err) {
+    document.getElementById('detail-body').innerHTML = `<div class="empty">Error: ${err.message}</div>`;
+  }
+}
+
+function renderSessionDetail(data) {
+  const session = data.session;
+  const messages = data.messages || [];
+
+  // Title
+  document.getElementById('detail-title').textContent = `Session ${session.id.substring(0, 8)}...`;
+
+  // Meta bar
+  const meta = document.getElementById('detail-meta');
+  meta.innerHTML = `
+    <span><strong>Status:</strong> <span class="badge ${session.status}">${session.status}</span></span>
+    <span><strong>Created:</strong> ${new Date(session.created_at).toLocaleString()}</span>
+    <span><strong>Messages:</strong> ${data.message_count}</span>
+    ${session.requirement ? `<span><strong>Requirement:</strong> ${session.requirement.substring(0, 120)}</span>` : ''}
+  `;
+
+  // Count messages per agent (from role)
+  const agentCounts = {};
+  messages.forEach(m => {
+    const from = m.from || 'unknown';
+    agentCounts[from] = (agentCounts[from] || 0) + 1;
+  });
+
+  // Build body content
+  const body = document.getElementById('detail-body');
+
+  // Agent summary chips
+  const roles = ['pm', 'ba', 'dev', 'frontend', 'test'];
+  const summaryHtml = roles
+    .filter(r => agentCounts[r])
+    .map(r => `<div class="agent-chip">${rolePill(r)} <span class="chip-count">${agentCounts[r]} msg${agentCounts[r] > 1 ? 's' : ''}</span></div>`)
+    .join('');
+
+  // Filter tabs
+  const filterRoles = ['all', ...roles.filter(r => agentCounts[r])];
+  const tabsHtml = filterRoles.map(r => {
+    const label = r === 'all' ? 'All' : (ROLE_LABELS[r] || r);
+    const count = r === 'all' ? messages.length : (agentCounts[r] || 0);
+    return `<button class="filter-tab ${currentFilter === r ? 'active' : ''}" onclick="filterMessages('${r}', this)">${label} (${count})</button>`;
+  }).join('');
+
+  // Message cards
+  const msgsHtml = renderMessages(messages, currentFilter);
+
+  body.innerHTML = `
+    <div class="agent-summary">${summaryHtml}</div>
+    <div class="filter-tabs" id="detail-filters">${tabsHtml}</div>
+    <div id="detail-messages">${msgsHtml}</div>
+  `;
+
+  // Store messages for filtering
+  body.dataset.messages = JSON.stringify(messages);
+}
+
+function filterMessages(role, btnEl) {
+  currentFilter = role;
+  const body = document.getElementById('detail-body');
+  const messages = JSON.parse(body.dataset.messages || '[]');
+
+  // Update active tab
+  document.querySelectorAll('.filter-tab').forEach(t => t.classList.remove('active'));
+  if (btnEl) btnEl.classList.add('active');
+
+  document.getElementById('detail-messages').innerHTML = renderMessages(messages, role);
+}
+
+function renderMessages(messages, filter) {
+  const filtered = filter === 'all' ? messages : messages.filter(m => m.from === filter);
+
+  if (filtered.length === 0) {
+    return '<div class="empty">No messages from this agent.</div>';
+  }
+
+  return filtered.map((m, idx) => {
+    const knd = kindLabel(m.kind);
+    const from = m.from || '?';
+    const to = m.to || '?';
+    const priorityCls = m.priority && m.priority.toLowerCase && m.priority.toLowerCase() !== 'normal' ? m.priority.toLowerCase() : '';
+    const priorityBadge = priorityCls ? `<span class="priority-badge ${priorityCls}">${priorityCls}</span>` : '';
+
+    // Format payload - try to pretty-print JSON
+    let payloadStr = '';
+    if (m.payload !== undefined && m.payload !== null) {
+      payloadStr = typeof m.payload === 'object' ? JSON.stringify(m.payload, null, 2) : String(m.payload);
+    } else if (m.kind) {
+      payloadStr = typeof m.kind === 'object' ? JSON.stringify(m.kind, null, 2) : String(m.kind);
+    }
+
+    // Check if content is long enough to collapse
+    const isLong = payloadStr.length > 300;
+    const collapsedCls = isLong ? 'collapsed' : '';
+
+    return `
+      <div class="msg-card">
+        <div class="msg-card-header">
+          <span class="step-num" style="color:#64748b;font-size:0.7rem">#${idx + 1}</span>
+          ${rolePill(from)}
+          <span class="arrow">&rarr;</span>
+          ${rolePill(to)}
+          <span class="kind-badge">${knd}</span>
+          ${priorityBadge}
+        </div>
+        <div class="msg-card-body ${collapsedCls}" onclick="this.classList.toggle('collapsed')">${escapeHtml(payloadStr)}</div>
+      </div>
+    `;
+  }).join('');
+}
+
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
 }
 
 // ─── Boot ───
