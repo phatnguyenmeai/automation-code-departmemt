@@ -1,0 +1,46 @@
+import { type Page, type Locator } from '@playwright/test'
+
+export abstract class BasePage {
+  constructor(protected readonly page: Page) {}
+
+  abstract readonly path: string
+
+  async goto() {
+    await this.page.goto(this.path)
+    await this.waitForLoad()
+  }
+
+  async waitForLoad() {
+    await this.page.waitForLoadState('networkidle')
+  }
+
+  // Common elements available on all pages
+  get notification(): Locator {
+    return this.page.getByRole('alert')
+  }
+
+  get loadingSpinner(): Locator {
+    return this.page.getByTestId('loading-spinner')
+  }
+
+  get header(): Locator {
+    return this.page.getByRole('banner')
+  }
+
+  get navigation(): Locator {
+    return this.page.getByRole('navigation')
+  }
+
+  // Common actions
+  async waitForNotification(text: string) {
+    await this.notification.filter({ hasText: text }).waitFor()
+  }
+
+  async waitForLoadingToFinish() {
+    await this.loadingSpinner.waitFor({ state: 'hidden' })
+  }
+
+  async getPageTitle(): Promise<string> {
+    return this.page.title()
+  }
+}

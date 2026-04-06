@@ -1,0 +1,34 @@
+<script setup lang="ts">
+import { ref, computed } from 'vue'
+
+interface Props {
+  // TODO: define props
+}
+
+const props = defineProps<Props>()
+
+const emit = defineEmits<{
+  // TODO: define events
+}>()
+
+// State
+// const state = ref()
+
+// Computed
+// const derived = computed(() => ...)
+
+// Methods
+// function handleAction() {}
+</script>
+
+<template>
+  <div class="{{COMPONENT_NAME}}">
+    <!-- TODO: template -->
+  </div>
+</template>
+
+<style scoped>
+.{{COMPONENT_NAME}} {
+  /* TODO: styles */
+}
+</style>

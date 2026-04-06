@@ -1,0 +1,34 @@
+import { defineStore } from 'pinia'
+import { ref, computed } from 'vue'
+
+export const use{{STORE_NAME}}Store = defineStore('{{STORE_ID}}', () => {
+  // State
+  const items = ref<{{TYPE}}[]>([])
+  const loading = ref(false)
+  const error = ref<string | null>(null)
+
+  // Getters
+  const count = computed(() => items.value.length)
+
+  // Actions
+  async function fetchAll() {
+    loading.value = true
+    error.value = null
+    try {
+      // TODO: API call
+      // items.value = await api.get('/...')
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Unknown error'
+    } finally {
+      loading.value = false
+    }
+  }
+
+  function reset() {
+    items.value = []
+    loading.value = false
+    error.value = null
+  }
+
+  return { items, loading, error, count, fetchAll, reset }
+})

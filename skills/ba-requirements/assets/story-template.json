@@ -1,0 +1,50 @@
+{
+  "stories": [
+    {
+      "id": "S-001",
+      "title": "",
+      "as_a": "",
+      "i_want": "",
+      "so_that": "",
+      "priority": "P0",
+      "story_points": 0,
+      "acceptance_criteria": [
+        {
+          "scenario": "",
+          "given": "",
+          "when": "",
+          "then": ""
+        }
+      ],
+      "technical_notes": [],
+      "ui_requirements": [],
+      "dependencies": [],
+      "assignee": "dev"
+    }
+  ],
+  "domain_model": {
+    "entities": [
+      {
+        "name": "",
+        "attributes": [],
+        "behaviors": [],
+        "invariants": []
+      }
+    ],
+    "relationships": [
+      {
+        "from": "",
+        "to": "",
+        "type": "1:many",
+        "description": ""
+      }
+    ]
+  },
+  "nfr": {
+    "performance": {},
+    "security": {},
+    "reliability": {},
+    "scalability": {}
+  },
+  "open_questions": []
+}

@@ -1,0 +1,33 @@
+{
+  "sprint": {
+    "id": "Sprint-YYYYMMDD",
+    "goal": "",
+    "duration_days": 10,
+    "start_date": "",
+    "end_date": "",
+    "status": "planning",
+    "capacity": {
+      "dev": { "available_points": 20, "assigned_points": 0 },
+      "frontend": { "available_points": 20, "assigned_points": 0 },
+      "test": { "available_points": 15, "assigned_points": 0 }
+    },
+    "stories": [],
+    "risks": [],
+    "blockers": [],
+    "dependencies": []
+  },
+  "report": {
+    "metrics": {
+      "planned_points": 0,
+      "completed_points": 0,
+      "velocity": 0,
+      "stories_completed": 0,
+      "stories_remaining": 0,
+      "bugs_found": 0,
+      "bugs_fixed": 0
+    },
+    "highlights": [],
+    "blockers": [],
+    "next_sprint_recommendations": []
+  }
+}
