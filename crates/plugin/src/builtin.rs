@@ -289,5 +289,8 @@ pub fn default_registry() -> crate::registry::ToolRegistry {
     reg.register(std::sync::Arc::new(FileReadTool));
     reg.register(std::sync::Arc::new(FileWriteTool));
     reg.register(std::sync::Arc::new(HttpRequestTool));
+    reg.register(std::sync::Arc::new(crate::cargo_tool::CargoTool));
+    reg.register(std::sync::Arc::new(crate::mongo_tool::MongoTool));
+    reg.register(std::sync::Arc::new(crate::playwright_tool::PlaywrightRunnerTool));
     reg
 }

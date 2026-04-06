@@ -15,3 +15,26 @@ test_exec = "sonnet"
 base_url = "http://localhost:3000"
 # Set to false to skip UI scenarios entirely (useful in CI w/o a browser).
 enable_playwright = true
+
+# Skills configuration — each skill is a directory under skills/ with a SKILL.md manifest.
+[skills]
+# Directory containing skill definitions.
+dir = "skills"
+# Skills loaded at startup (all skills in the dir are loaded by default).
+# Uncomment to restrict to specific skills:
+# enabled = ["rust-backend", "mongodb", "vuejs-frontend", "pm-sprint-planner", "ba-requirements", "playwright-e2e", "code-reviewer", "api-tester"]
+
+# Plugin tools registered at startup.
+[plugins]
+# Built-in tools are always registered. Additional tool plugins can be added here.
+builtin = ["shell", "file_read", "file_write", "http_request", "cargo_tool", "mongo_tool", "playwright_runner"]
+
+# MongoDB connection settings (used by mongo_tool).
+[mongodb]
+connection_string = "mongodb://localhost:27017"
+default_database = "dev_department"
+
+# Rust backend settings (used by cargo_tool).
+[rust]
+workspace_root = "."
+default_toolchain = "stable"
