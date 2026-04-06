@@ -1622,6 +1622,7 @@ dependencies = [
  "agent-core",
  "async-trait",
  "axum",
+ "chrono",
  "gateway",
  "plugin",
  "serde",

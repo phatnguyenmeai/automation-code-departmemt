@@ -23,6 +23,8 @@ pub struct AppState {
     pub channels: Arc<HashMap<String, Arc<dyn ChannelPlugin>>>,
     /// Broadcast channel for real-time pipeline events.
     pub events_tx: broadcast::Sender<PipelineEvent>,
+    /// Whether API key authentication is enforced.
+    pub auth_enabled: bool,
 }
 
 impl AppState {
@@ -39,7 +41,14 @@ impl AppState {
             skill_registry: Arc::new(Mutex::new(skill_registry)),
             channels: Arc::new(channels),
             events_tx,
+            auth_enabled: false,
         }
+    }
+
+    /// Enable authentication enforcement.
+    pub fn with_auth(mut self) -> Self {
+        self.auth_enabled = true;
+        self
     }
 
     /// Broadcast a pipeline event to all WebSocket subscribers.

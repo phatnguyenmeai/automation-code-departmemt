@@ -71,6 +71,62 @@ pub struct SessionRecord {
     pub requirement: Option<String>,
 }
 
+/// Role-based access level for API keys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApiKeyRole {
+    /// Full access: manage keys, run pipelines, view all data.
+    Admin,
+    /// Can submit requirements and view sessions.
+    Operator,
+    /// Read-only: view sessions, tools, skills.
+    Viewer,
+    /// Channel webhook ingress only.
+    Channel,
+}
+
+impl std::fmt::Display for ApiKeyRole {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ApiKeyRole::Admin => write!(f, "admin"),
+            ApiKeyRole::Operator => write!(f, "operator"),
+            ApiKeyRole::Viewer => write!(f, "viewer"),
+            ApiKeyRole::Channel => write!(f, "channel"),
+        }
+    }
+}
+
+impl std::str::FromStr for ApiKeyRole {
+    type Err = StorageError;
+    fn from_str(s: &str) -> Result<Self> {
+        match s {
+            "admin" => Ok(ApiKeyRole::Admin),
+            "operator" => Ok(ApiKeyRole::Operator),
+            "viewer" => Ok(ApiKeyRole::Viewer),
+            "channel" => Ok(ApiKeyRole::Channel),
+            _ => Err(StorageError::Other(format!("unknown role: {s}"))),
+        }
+    }
+}
+
+/// A stored API key record.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApiKeyRecord {
+    pub id: Uuid,
+    /// The key prefix shown in listings (first 8 chars).
+    pub prefix: String,
+    /// SHA-256 hash of the full key (never store plaintext).
+    #[serde(skip_serializing)]
+    pub key_hash: String,
+    /// Human label for the key.
+    pub label: String,
+    pub role: ApiKeyRole,
+    pub created_at: DateTime<Utc>,
+    /// None means the key never expires.
+    pub expires_at: Option<DateTime<Utc>>,
+    pub revoked: bool,
+}
+
 /// Core persistence trait modeled after OpenClaw's storage plugin interface.
 ///
 /// Implementations must be Send + Sync for use across async tasks.
@@ -98,4 +154,18 @@ pub trait Storage: Send + Sync {
 
     /// Load all messages for a session in insertion order.
     async fn load_messages(&self, session_id: Uuid) -> Result<Vec<TaskMessage>>;
+
+    // ─── API Key Management ───
+
+    /// Store a new API key (hash, not plaintext).
+    async fn create_api_key(&self, record: &ApiKeyRecord) -> Result<()>;
+
+    /// Look up an API key by its SHA-256 hash. Returns None if not found or revoked/expired.
+    async fn find_api_key_by_hash(&self, key_hash: &str) -> Result<Option<ApiKeyRecord>>;
+
+    /// List all API keys (without hashes).
+    async fn list_api_keys(&self) -> Result<Vec<ApiKeyRecord>>;
+
+    /// Revoke an API key by ID.
+    async fn revoke_api_key(&self, id: Uuid) -> Result<()>;
 }

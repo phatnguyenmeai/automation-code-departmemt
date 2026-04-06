@@ -4,7 +4,7 @@
 //! a blocking thread via `tokio::task::spawn_blocking` so the async runtime is
 //! never blocked by disk I/O.
 
-use crate::{Result, SessionRecord, SessionStatus, Storage, StorageError};
+use crate::{ApiKeyRecord, ApiKeyRole, Result, SessionRecord, SessionStatus, Storage, StorageError};
 use agent_core::TaskMessage;
 use async_trait::async_trait;
 use chrono::Utc;
@@ -83,6 +83,20 @@ impl SqliteStorage {
 
             CREATE INDEX IF NOT EXISTS idx_sessions_updated
                 ON sessions(updated_at DESC);
+
+            CREATE TABLE IF NOT EXISTS api_keys (
+                id          TEXT PRIMARY KEY,
+                prefix      TEXT NOT NULL,
+                key_hash    TEXT NOT NULL UNIQUE,
+                label       TEXT NOT NULL DEFAULT '',
+                role        TEXT NOT NULL DEFAULT 'viewer',
+                created_at  TEXT NOT NULL,
+                expires_at  TEXT,
+                revoked     INTEGER NOT NULL DEFAULT 0
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_api_keys_hash
+                ON api_keys(key_hash);
             ",
         )?;
         Ok(())
@@ -344,6 +358,106 @@ impl Storage for SqliteStorage {
                 });
             }
             Ok(messages)
+        })
+        .await
+    }
+
+    async fn create_api_key(&self, record: &ApiKeyRecord) -> Result<()> {
+        let id = record.id.to_string();
+        let prefix = record.prefix.clone();
+        let key_hash = record.key_hash.clone();
+        let label = record.label.clone();
+        let role = record.role.to_string();
+        let created_at = record.created_at.to_rfc3339();
+        let expires_at = record.expires_at.map(|e: chrono::DateTime<Utc>| e.to_rfc3339());
+
+        self.with_conn(move |conn| {
+            conn.execute(
+                "INSERT INTO api_keys (id, prefix, key_hash, label, role, created_at, expires_at, revoked)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0)",
+                params![id, prefix, key_hash, label, role, created_at, expires_at],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn find_api_key_by_hash(&self, key_hash: &str) -> Result<Option<ApiKeyRecord>> {
+        let hash = key_hash.to_string();
+        self.with_conn(move |conn| {
+            let result = conn.query_row(
+                "SELECT id, prefix, key_hash, label, role, created_at, expires_at, revoked
+                 FROM api_keys WHERE key_hash = ?1 AND revoked = 0",
+                params![hash],
+                |row| {
+                    Ok(ApiKeyRecord {
+                        id: row.get::<_, String>(0)?.parse().unwrap_or_default(),
+                        prefix: row.get(1)?,
+                        key_hash: row.get(2)?,
+                        label: row.get(3)?,
+                        role: row.get::<_, String>(4)?.parse().unwrap_or(ApiKeyRole::Viewer),
+                        created_at: row.get::<_, String>(5)?.parse().unwrap_or_default(),
+                        expires_at: row
+                            .get::<_, Option<String>>(6)?
+                            .and_then(|s| s.parse().ok()),
+                        revoked: row.get::<_, i32>(7)? != 0,
+                    })
+                },
+            );
+            match result {
+                Ok(record) => {
+                    // Check expiry.
+                    if let Some(exp) = record.expires_at {
+                        if exp < Utc::now() {
+                            return Ok(None);
+                        }
+                    }
+                    Ok(Some(record))
+                }
+                Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+                Err(e) => Err(StorageError::Sqlite(e)),
+            }
+        })
+        .await
+    }
+
+    async fn list_api_keys(&self) -> Result<Vec<ApiKeyRecord>> {
+        self.with_conn(move |conn| {
+            let mut stmt = conn.prepare(
+                "SELECT id, prefix, key_hash, label, role, created_at, expires_at, revoked
+                 FROM api_keys ORDER BY created_at DESC",
+            )?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok(ApiKeyRecord {
+                        id: row.get::<_, String>(0)?.parse().unwrap_or_default(),
+                        prefix: row.get(1)?,
+                        key_hash: "***".to_string(), // Never expose hash in listings
+                        label: row.get(3)?,
+                        role: row.get::<_, String>(4)?.parse().unwrap_or(ApiKeyRole::Viewer),
+                        created_at: row.get::<_, String>(5)?.parse().unwrap_or_default(),
+                        expires_at: row
+                            .get::<_, Option<String>>(6)?
+                            .and_then(|s| s.parse().ok()),
+                        revoked: row.get::<_, i32>(7)? != 0,
+                    })
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            Ok(rows)
+        })
+        .await
+    }
+
+    async fn revoke_api_key(&self, id: Uuid) -> Result<()> {
+        self.with_conn(move |conn| {
+            let rows = conn.execute(
+                "UPDATE api_keys SET revoked = 1 WHERE id = ?1",
+                params![id.to_string()],
+            )?;
+            if rows == 0 {
+                return Err(StorageError::NotFound(id.to_string()));
+            }
+            Ok(())
         })
         .await
     }
