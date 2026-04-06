@@ -461,6 +461,26 @@ impl Storage for SqliteStorage {
         })
         .await
     }
+
+    async fn delete_session(&self, id: Uuid) -> Result<()> {
+        self.with_conn(move |conn| {
+            let id_str = id.to_string();
+            // Delete messages first (foreign key child).
+            conn.execute(
+                "DELETE FROM messages WHERE session_id = ?1",
+                params![id_str],
+            )?;
+            let rows = conn.execute(
+                "DELETE FROM sessions WHERE id = ?1",
+                params![id_str],
+            )?;
+            if rows == 0 {
+                return Err(StorageError::NotFound(id_str));
+            }
+            Ok(())
+        })
+        .await
+    }
 }
 
 #[cfg(test)]

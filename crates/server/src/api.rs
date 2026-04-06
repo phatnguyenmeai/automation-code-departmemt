@@ -5,6 +5,8 @@
 //! - POST /api/run            — Submit a new requirement (operator+)
 //! - GET  /api/sessions       — List past sessions (viewer+)
 //! - GET  /api/sessions/:id   — Get session details + messages (viewer+)
+//! - POST /api/sessions/:id/stop — Stop a running session (operator+)
+//! - DELETE /api/sessions/:id — Delete a session and its messages (operator+)
 //! - GET  /api/tools          — List available tools (viewer+)
 //! - GET  /api/skills         — List registered skills (viewer+)
 //! - POST /api/keys           — Create a new API key (admin)
@@ -22,7 +24,7 @@ use axum::{
     Router,
 };
 use serde::Deserialize;
-use storage::{ApiKeyRecord, ApiKeyRole};
+use storage::{ApiKeyRecord, ApiKeyRole, SessionStatus};
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -31,7 +33,8 @@ pub fn routes() -> Router<AppState> {
         // Authenticated
         .route("/api/run", post(submit_requirement))
         .route("/api/sessions", get(list_sessions))
-        .route("/api/sessions/{id}", get(get_session))
+        .route("/api/sessions/{id}", get(get_session).delete(delete_session))
+        .route("/api/sessions/{id}/stop", post(stop_session))
         .route("/api/tools", get(list_tools))
         .route("/api/skills", get(list_skills))
         .route("/api/auth/me", get(auth_me))
@@ -178,6 +181,100 @@ async fn get_session(
             "priority": serde_json::to_value(&m.priority).unwrap_or_default(),
         })).collect::<Vec<_>>(),
         "message_count": messages.len(),
+    })))
+}
+
+async fn stop_session(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    auth::require_role(&auth, ApiKeyRole::Operator)?;
+
+    let uuid: uuid::Uuid = id.parse().map_err(|_| (
+        StatusCode::BAD_REQUEST,
+        Json(serde_json::json!({ "error": "invalid UUID" })),
+    ))?;
+
+    // Only stop sessions that are currently running.
+    let session = state
+        .storage
+        .load_session(uuid)
+        .await
+        .map_err(|e| (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": format!("session: {e}") })),
+        ))?;
+
+    if session.status != SessionStatus::Running {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "error": format!("session is already {}", session.status),
+                "status": session.status,
+            })),
+        ));
+    }
+
+    state
+        .storage
+        .update_session_status(uuid, SessionStatus::Interrupted)
+        .await
+        .map_err(|e| (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("storage: {e}") })),
+        ))?;
+
+    state.emit(PipelineEvent {
+        session_id: uuid.to_string(),
+        event_type: "session_stopped".into(),
+        data: serde_json::json!({
+            "stopped_by": auth.label,
+        }),
+    });
+
+    tracing::info!(session_id = %uuid, "session stopped by {}", auth.label);
+
+    Ok(Json(serde_json::json!({
+        "status": "interrupted",
+        "id": uuid.to_string(),
+    })))
+}
+
+async fn delete_session(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    auth::require_role(&auth, ApiKeyRole::Operator)?;
+
+    let uuid: uuid::Uuid = id.parse().map_err(|_| (
+        StatusCode::BAD_REQUEST,
+        Json(serde_json::json!({ "error": "invalid UUID" })),
+    ))?;
+
+    state
+        .storage
+        .delete_session(uuid)
+        .await
+        .map_err(|e| (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": format!("session: {e}") })),
+        ))?;
+
+    state.emit(PipelineEvent {
+        session_id: uuid.to_string(),
+        event_type: "session_deleted".into(),
+        data: serde_json::json!({
+            "deleted_by": auth.label,
+        }),
+    });
+
+    tracing::info!(session_id = %uuid, "session deleted by {}", auth.label);
+
+    Ok(Json(serde_json::json!({
+        "status": "deleted",
+        "id": uuid.to_string(),
     })))
 }
 

@@ -168,4 +168,7 @@ pub trait Storage: Send + Sync {
 
     /// Revoke an API key by ID.
     async fn revoke_api_key(&self, id: Uuid) -> Result<()>;
+
+    /// Delete a session and all its messages.
+    async fn delete_session(&self, id: Uuid) -> Result<()>;
 }

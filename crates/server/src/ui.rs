@@ -147,6 +147,32 @@ const DASHBOARD_HTML: &str = r##"<!DOCTYPE html>
     .filter-tab:hover { border-color: #475569; color: #e2e8f0; }
     .filter-tab.active { background: #334155; color: #e2e8f0; border-color: #475569; }
 
+    /* Action buttons */
+    .action-btn { padding: 0.3rem 0.65rem; border-radius: 4px; border: 1px solid #475569;
+                  background: transparent; cursor: pointer; font-size: 0.75rem; font-weight: 600; }
+    .action-btn:hover { opacity: 0.85; }
+    .action-btn.stop { color: #fbbf24; border-color: #854d0e; }
+    .action-btn.stop:hover { background: #854d0e; color: #fef3c7; }
+    .action-btn.delete { color: #f87171; border-color: #991b1b; }
+    .action-btn.delete:hover { background: #991b1b; color: #fee2e2; }
+    .detail-actions { display: flex; gap: 0.5rem; }
+    .session-row { position: relative; }
+    .session-actions { display: none; position: absolute; right: 0.5rem; top: 50%; transform: translateY(-50%);
+                       gap: 0.35rem; }
+    .session-row:hover .session-actions { display: flex; }
+    .confirm-overlay { position: fixed; inset: 0; background: rgba(15,23,42,0.85); z-index: 950;
+                       display: flex; align-items: center; justify-content: center; }
+    .confirm-box { background: #1e293b; border: 1px solid #475569; border-radius: 8px; padding: 1.5rem;
+                   max-width: 400px; width: 90%; text-align: center; }
+    .confirm-box p { margin-bottom: 1rem; color: #cbd5e1; font-size: 0.9rem; }
+    .confirm-box .confirm-actions { display: flex; gap: 0.5rem; justify-content: center; }
+    .confirm-box .confirm-actions button { padding: 0.5rem 1.25rem; border-radius: 4px; border: none;
+                                            cursor: pointer; font-weight: 600; font-size: 0.85rem; }
+    .confirm-box .confirm-cancel { background: #334155; color: #e2e8f0; }
+    .confirm-box .confirm-cancel:hover { background: #475569; }
+    .confirm-box .confirm-danger { background: #dc2626; color: white; }
+    .confirm-box .confirm-danger:hover { background: #b91c1c; }
+
     /* Login overlay */
     .login-overlay { position: fixed; inset: 0; background: #0f172a; display: flex;
                      align-items: center; justify-content: center; z-index: 1000; }
@@ -236,7 +262,11 @@ const DASHBOARD_HTML: &str = r##"<!DOCTYPE html>
     <div class="detail-panel">
       <div class="detail-header">
         <h2 id="detail-title">Session Detail</h2>
-        <button class="close-btn" onclick="closeDetail()">Close</button>
+        <div class="detail-actions">
+          <button class="action-btn stop" id="detail-stop-btn" style="display:none" onclick="stopSessionFromDetail()">Stop</button>
+          <button class="action-btn delete" id="detail-delete-btn" onclick="deleteSessionFromDetail()">Delete</button>
+          <button class="close-btn" onclick="closeDetail()">Close</button>
+        </div>
       </div>
       <div class="detail-meta" id="detail-meta"></div>
       <div class="detail-body" id="detail-body">
@@ -475,12 +505,20 @@ async function loadSessions() {
       return;
     }
 
-    list.innerHTML = data.sessions.map(s => `
+    list.innerHTML = data.sessions.map(s => {
+      const stopBtn = s.status === 'running'
+        ? `<button class="action-btn stop" onclick="event.stopPropagation();stopSession('${s.id}')">Stop</button>`
+        : '';
+      return `
       <div class="session-row" onclick="openSessionDetail('${s.id}')">
         <div class="id">${s.id} <span class="badge ${s.status}">${s.status}</span></div>
         <div class="meta">${s.requirement ? s.requirement.substring(0, 80) : '-'}</div>
-      </div>
-    `).join('');
+        <div class="session-actions">
+          ${stopBtn}
+          <button class="action-btn delete" onclick="event.stopPropagation();confirmDeleteSession('${s.id}')">Delete</button>
+        </div>
+      </div>`;
+    }).join('');
   } catch {}
 }
 
@@ -693,6 +731,130 @@ function escapeHtml(str) {
   const div = document.createElement('div');
   div.textContent = str;
   return div.innerHTML;
+}
+
+// ─── Session Actions (Stop / Delete) ───
+
+let currentDetailSessionId = null;
+
+// Override openSessionDetail to track the current session ID.
+const _origOpenSessionDetail = openSessionDetail;
+openSessionDetail = function(id) {
+  currentDetailSessionId = id;
+  _origOpenSessionDetail(id);
+};
+
+// Show/hide the Stop button based on session status.
+const _origRenderSessionDetail = renderSessionDetail;
+renderSessionDetail = function(data) {
+  _origRenderSessionDetail(data);
+  const stopBtn = document.getElementById('detail-stop-btn');
+  if (data.session && data.session.status === 'running') {
+    stopBtn.style.display = 'inline-block';
+  } else {
+    stopBtn.style.display = 'none';
+  }
+};
+
+async function stopSession(id) {
+  try {
+    const resp = await fetch(`/api/sessions/${id}/stop`, {
+      method: 'POST',
+      headers: authHeaders(),
+    });
+    if (resp.status === 401) { showLogin(); return; }
+    if (resp.status === 403) {
+      addEvent({ event_type: 'error', data: { message: 'Insufficient permissions (need operator role)' } });
+      return;
+    }
+    const data = await resp.json();
+    if (!resp.ok) {
+      addEvent({ event_type: 'error', data: { message: data.error || 'Failed to stop session' } });
+      return;
+    }
+    addEvent({ event_type: 'session_stopped', data });
+    loadSessions();
+  } catch (err) {
+    addEvent({ event_type: 'error', data: { message: err.message } });
+  }
+}
+
+function stopSessionFromDetail() {
+  if (currentDetailSessionId) {
+    stopSession(currentDetailSessionId).then(() => {
+      // Reload the detail view.
+      loadSessionDetail(currentDetailSessionId);
+    });
+  }
+}
+
+async function deleteSessionApi(id) {
+  try {
+    const resp = await fetch(`/api/sessions/${id}`, {
+      method: 'DELETE',
+      headers: authHeaders(),
+    });
+    if (resp.status === 401) { showLogin(); return; }
+    if (resp.status === 403) {
+      addEvent({ event_type: 'error', data: { message: 'Insufficient permissions (need operator role)' } });
+      return;
+    }
+    const data = await resp.json();
+    if (!resp.ok) {
+      addEvent({ event_type: 'error', data: { message: data.error || 'Failed to delete session' } });
+      return;
+    }
+    addEvent({ event_type: 'session_deleted', data });
+    closeDetail();
+    loadSessions();
+  } catch (err) {
+    addEvent({ event_type: 'error', data: { message: err.message } });
+  }
+}
+
+function deleteSessionFromDetail() {
+  if (currentDetailSessionId) {
+    showConfirm(
+      'Are you sure you want to delete this session? This action cannot be undone.',
+      () => deleteSessionApi(currentDetailSessionId)
+    );
+  }
+}
+
+function confirmDeleteSession(id) {
+  showConfirm(
+    'Are you sure you want to delete this session? This action cannot be undone.',
+    () => deleteSessionApi(id)
+  );
+}
+
+function showConfirm(message, onConfirm) {
+  // Remove any existing confirm overlay.
+  const existing = document.getElementById('confirm-overlay');
+  if (existing) existing.remove();
+
+  const overlay = document.createElement('div');
+  overlay.className = 'confirm-overlay';
+  overlay.id = 'confirm-overlay';
+  overlay.innerHTML = `
+    <div class="confirm-box">
+      <p>${message}</p>
+      <div class="confirm-actions">
+        <button class="confirm-cancel" id="confirm-cancel">Cancel</button>
+        <button class="confirm-danger" id="confirm-ok">Delete</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) { overlay.remove(); }
+  });
+  document.getElementById('confirm-cancel').onclick = () => overlay.remove();
+  document.getElementById('confirm-ok').onclick = () => {
+    overlay.remove();
+    onConfirm();
+  };
 }
 
 // ─── Boot ───
