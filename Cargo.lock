@@ -1269,6 +1269,7 @@ version = "0.1.0"
 dependencies = [
  "agent-core",
  "async-trait",
+ "chrono",
  "reqwest",
  "serde",
  "serde_json",
@@ -1643,6 +1644,7 @@ dependencies = [
  "chrono",
  "gateway",
  "plugin",
+ "reqwest",
  "serde",
  "serde_json",
  "storage",

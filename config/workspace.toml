@@ -67,6 +67,19 @@ dir = "skills"
 # Built-in tools are always registered. Additional tool plugins can be added here.
 builtin = ["shell", "file_read", "file_write", "http_request", "cargo_tool", "mongo_tool", "playwright_runner"]
 
+# Telegram bot integration.
+# Enables agent reporting, approval workflows, and interactive messaging via Telegram.
+# To enable: set bot_token from @BotFather and default_chat_id for your group/user.
+# Bot token can also be provided via TELEGRAM_BOT_TOKEN env var or --telegram-token CLI arg.
+#
+# [telegram]
+# bot_token = "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
+# default_chat_id = -1001234567890
+# allowed_users = []              # Empty = allow all; or list specific user IDs
+# webhook_mode = false            # false = long-polling (recommended for dev)
+# webhook_url = ""                # Required if webhook_mode = true
+# parse_mode = "HTML"             # HTML or MarkdownV2
+
 # MongoDB connection settings (used by mongo_tool).
 [mongodb]
 connection_string = "mongodb://localhost:27017"
