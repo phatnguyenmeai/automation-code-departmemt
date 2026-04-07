@@ -7,6 +7,7 @@ members = [
     "crates/mcp-client",
     "crates/agents",
     "crates/storage",
+    "crates/memory",
     "crates/plugin",
     "crates/server",
     "crates/cli",

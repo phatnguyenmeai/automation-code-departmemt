@@ -1,6 +1,6 @@
 use crate::parse_json;
 use agent_core::{
-    Agent, AgentCtx, AgentError, AgentOutput, Result, Role, TaskKind, TaskMessage,
+    Agent, AgentCtx, AgentError, AgentOutput, ContextBudget, Result, Role, TaskKind, TaskMessage,
 };
 use async_trait::async_trait;
 use llm_claude::{ClaudeClient, ClaudeModel, PromptBuilder};
@@ -12,14 +12,31 @@ Respond with ONLY a JSON object: {\"pages\":[{\"path\":\"/login\",\"components\"
 [{\"name\":\"LoginForm\",\"elements\":[{\"role\":\"textbox\",\"name\":\"Email\"},\
 {\"role\":\"button\",\"name\":\"Sign in\"}]}]}]}. No prose.";
 
+const TASK_INSTRUCTION: &str = "Produce frontend spec JSON as specified.";
+
 pub struct FrontendAgent {
     llm: ClaudeClient,
     model: ClaudeModel,
+    budget: ContextBudget,
 }
 
 impl FrontendAgent {
     pub fn new(llm: ClaudeClient, model: ClaudeModel) -> Self {
-        Self { llm, model }
+        Self {
+            llm,
+            model,
+            budget: ContextBudget {
+                total_context_tokens: 8000,
+                system_prompt_reserve: 500,
+                current_task_reserve: 4000,
+                history_budget: 3500,
+            },
+        }
+    }
+
+    pub fn with_budget(mut self, budget: ContextBudget) -> Self {
+        self.budget = budget;
+        self
     }
 }
 
@@ -29,7 +46,7 @@ impl Agent for FrontendAgent {
         Role::Frontend
     }
 
-    async fn handle(&mut self, msg: TaskMessage, _ctx: &AgentCtx) -> Result<AgentOutput> {
+    async fn handle(&mut self, msg: TaskMessage, ctx: &AgentCtx) -> Result<AgentOutput> {
         if !matches!(msg.kind, TaskKind::Story) {
             return Err(AgentError::Other(format!(
                 "Frontend: unexpected task kind {:?}",
@@ -37,14 +54,23 @@ impl Agent for FrontendAgent {
             )));
         }
 
-        let prompt = PromptBuilder::new()
-            .json_section("Stories", &msg.payload)
-            .section("Task", "Produce frontend spec JSON as specified.")
-            .build();
+        let (system, prompt) = if let Some(assembler) = &ctx.assembler {
+            let (sys, prompt, tokens, entries) = assembler
+                .assemble(ctx.session_id, self.role(), &msg, SYSTEM, TASK_INSTRUCTION, &self.budget)
+                .await;
+            tracing::debug!(tokens, entries, "Frontend: assembled context with memory");
+            (sys, prompt)
+        } else {
+            let prompt = PromptBuilder::new()
+                .json_section("Stories", &msg.payload)
+                .section("Task", TASK_INSTRUCTION)
+                .build();
+            (SYSTEM.to_string(), prompt)
+        };
 
         let text = self
             .llm
-            .complete(self.model, Some(SYSTEM), &prompt, 2048)
+            .complete(self.model, Some(&system), &prompt, 2048)
             .await
             .map_err(|e| AgentError::Llm(e.to_string()))?;
 

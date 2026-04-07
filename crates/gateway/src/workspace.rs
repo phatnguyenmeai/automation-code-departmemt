@@ -1,7 +1,8 @@
 use crate::lane_queue::{recv_prioritized, LaneQueue, LaneSender};
 use crate::session::Session;
 use agent_core::{
-    Agent, AgentCtx, AgentOutput, Dispatcher, Result as AgentResult, Role, TaskMessage,
+    Agent, AgentCtx, AgentOutput, ContextAssembly, Dispatcher, Result as AgentResult, Role,
+    TaskMessage,
 };
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -80,6 +81,8 @@ pub struct Gateway {
     senders: HashMap<Role, LaneSender>,
     final_tx: mpsc::UnboundedSender<serde_json::Value>,
     final_rx: Option<FinalSignal>,
+    /// Optional memory-aware context assembler (OpenClaw-style).
+    assembler: Option<Arc<dyn ContextAssembly>>,
 }
 
 impl Gateway {
@@ -96,7 +99,17 @@ impl Gateway {
             senders,
             final_tx,
             final_rx: Some(final_rx),
+            assembler: None,
         }
+    }
+
+    /// Set a memory-aware context assembler (OpenClaw-style memory management).
+    ///
+    /// When set, agents will receive this assembler via `AgentCtx` and can
+    /// use it to build prompts with recalled conversation history.
+    pub fn with_assembler(mut self, assembler: Arc<dyn ContextAssembly>) -> Self {
+        self.assembler = Some(assembler);
+        self
     }
 
     pub fn sender(&self, role: Role) -> LaneSender {
@@ -126,6 +139,8 @@ impl Gateway {
         let ctx = AgentCtx {
             workspace_id: self.workspace.id.clone(),
             dispatch: self.dispatcher(),
+            session_id: self.workspace.session.id,
+            assembler: self.assembler.clone(),
         };
         let session = self.workspace.session.clone();
         let final_tx = self.final_tx.clone();

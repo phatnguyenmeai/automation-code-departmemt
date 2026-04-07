@@ -4,7 +4,7 @@
 //! a blocking thread via `tokio::task::spawn_blocking` so the async runtime is
 //! never blocked by disk I/O.
 
-use crate::{ApiKeyRecord, ApiKeyRole, Result, SessionRecord, SessionStatus, Storage, StorageError};
+use crate::{ApiKeyRecord, ApiKeyRole, Result, SessionRecord, SessionStatus, Storage, StorageError, SummaryRecord};
 use agent_core::TaskMessage;
 use async_trait::async_trait;
 use chrono::Utc;
@@ -97,8 +97,32 @@ impl SqliteStorage {
 
             CREATE INDEX IF NOT EXISTS idx_api_keys_hash
                 ON api_keys(key_hash);
+
+            -- Memory management tables (OpenClaw-style)
+            CREATE TABLE IF NOT EXISTS summaries (
+                id          TEXT PRIMARY KEY,
+                session_id  TEXT NOT NULL REFERENCES sessions(id),
+                content     TEXT NOT NULL,
+                token_count INTEGER NOT NULL DEFAULT 0,
+                created_at  TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_summaries_session
+                ON summaries(session_id, created_at ASC);
             ",
         )?;
+
+        // Add compacted column to messages if it doesn't exist yet.
+        // SQLite doesn't have ADD COLUMN IF NOT EXISTS, so we check first.
+        let has_compacted: bool = conn
+            .prepare("SELECT compacted FROM messages LIMIT 0")
+            .is_ok();
+        if !has_compacted {
+            let _ = conn.execute_batch(
+                "ALTER TABLE messages ADD COLUMN compacted INTEGER NOT NULL DEFAULT 0;",
+            );
+        }
+
         Ok(())
     }
 
@@ -462,10 +486,155 @@ impl Storage for SqliteStorage {
         .await
     }
 
+    async fn store_summary(
+        &self,
+        session_id: Uuid,
+        content: &str,
+        token_count: usize,
+    ) -> Result<()> {
+        let content = content.to_string();
+        self.with_conn(move |conn| {
+            let id = Uuid::new_v4().to_string();
+            let now = Utc::now().to_rfc3339();
+            conn.execute(
+                "INSERT INTO summaries (id, session_id, content, token_count, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![id, session_id.to_string(), content, token_count as i64, now],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn load_summaries(&self, session_id: Uuid) -> Result<Vec<SummaryRecord>> {
+        self.with_conn(move |conn| {
+            let mut stmt = conn.prepare(
+                "SELECT id, session_id, content, token_count, created_at
+                 FROM summaries WHERE session_id = ?1 ORDER BY created_at ASC",
+            )?;
+            let rows = stmt
+                .query_map(params![session_id.to_string()], |row| {
+                    Ok(SummaryRecord {
+                        id: row.get::<_, String>(0)?.parse().unwrap_or_default(),
+                        session_id: row.get::<_, String>(1)?.parse().unwrap_or_default(),
+                        content: row.get(2)?,
+                        token_count: row.get::<_, i64>(3)? as usize,
+                        created_at: row.get::<_, String>(4)?.parse().unwrap_or_default(),
+                    })
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            Ok(rows)
+        })
+        .await
+    }
+
+    async fn mark_compacted(&self, session_id: Uuid, message_ids: &[String]) -> Result<()> {
+        let ids = message_ids.to_vec();
+        self.with_conn(move |conn| {
+            for id in &ids {
+                conn.execute(
+                    "UPDATE messages SET compacted = 1 WHERE id = ?1 AND session_id = ?2",
+                    params![id, session_id.to_string()],
+                )?;
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    async fn load_active_messages(&self, session_id: Uuid) -> Result<Vec<TaskMessage>> {
+        self.with_conn(move |conn| {
+            let mut stmt = conn.prepare(
+                "SELECT from_role, to_role, kind, payload, priority, id, parent_id
+                 FROM messages WHERE session_id = ?1 AND compacted = 0 ORDER BY seq ASC",
+            )?;
+            let rows = stmt
+                .query_map(params![session_id.to_string()], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, Option<String>>(6)?,
+                    ))
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+
+            let mut messages = Vec::with_capacity(rows.len());
+            for (from_str, to_str, kind_str, payload_str, priority_str, id_str, parent_str) in rows
+            {
+                let from: agent_core::Role =
+                    serde_json::from_value(serde_json::json!(from_str)).map_err(|e| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            0,
+                            rusqlite::types::Type::Text,
+                            Box::new(e),
+                        )
+                    })?;
+                let to: agent_core::Role =
+                    serde_json::from_value(serde_json::json!(to_str)).map_err(|e| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            1,
+                            rusqlite::types::Type::Text,
+                            Box::new(e),
+                        )
+                    })?;
+                let kind: agent_core::TaskKind =
+                    serde_json::from_value(serde_json::json!({ "kind": kind_str })).map_err(
+                        |e| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                2,
+                                rusqlite::types::Type::Text,
+                                Box::new(e),
+                            )
+                        },
+                    )?;
+                let payload: serde_json::Value = serde_json::from_str(&payload_str).map_err(
+                    |e| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            3,
+                            rusqlite::types::Type::Text,
+                            Box::new(e),
+                        )
+                    },
+                )?;
+                let priority: agent_core::Priority =
+                    serde_json::from_value(serde_json::json!(priority_str)).map_err(|e| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            4,
+                            rusqlite::types::Type::Text,
+                            Box::new(e),
+                        )
+                    })?;
+                let id = agent_core::TaskId(id_str.parse().unwrap_or_default());
+                let parent_id =
+                    parent_str.map(|s| agent_core::TaskId(s.parse().unwrap_or_default()));
+
+                messages.push(TaskMessage {
+                    id,
+                    parent_id,
+                    from,
+                    to,
+                    kind,
+                    payload,
+                    priority,
+                });
+            }
+            Ok(messages)
+        })
+        .await
+    }
+
     async fn delete_session(&self, id: Uuid) -> Result<()> {
         self.with_conn(move |conn| {
             let id_str = id.to_string();
-            // Delete messages first (foreign key child).
+            // Delete children first (foreign key).
+            conn.execute(
+                "DELETE FROM summaries WHERE session_id = ?1",
+                params![id_str],
+            )?;
             conn.execute(
                 "DELETE FROM messages WHERE session_id = ?1",
                 params![id_str],

@@ -109,6 +109,16 @@ impl std::str::FromStr for ApiKeyRole {
     }
 }
 
+/// A stored summary of compacted messages.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SummaryRecord {
+    pub id: Uuid,
+    pub session_id: Uuid,
+    pub content: String,
+    pub token_count: usize,
+    pub created_at: DateTime<Utc>,
+}
+
 /// A stored API key record.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiKeyRecord {
@@ -171,4 +181,23 @@ pub trait Storage: Send + Sync {
 
     /// Delete a session and all its messages.
     async fn delete_session(&self, id: Uuid) -> Result<()>;
+
+    // ─── Memory Management (OpenClaw-style) ───
+
+    /// Store a summary of compacted messages.
+    async fn store_summary(
+        &self,
+        session_id: Uuid,
+        content: &str,
+        token_count: usize,
+    ) -> Result<()>;
+
+    /// Load all summaries for a session, oldest first.
+    async fn load_summaries(&self, session_id: Uuid) -> Result<Vec<SummaryRecord>>;
+
+    /// Mark messages as compacted (already summarized).
+    async fn mark_compacted(&self, session_id: Uuid, message_ids: &[String]) -> Result<()>;
+
+    /// Load only non-compacted messages for a session (recent/active messages).
+    async fn load_active_messages(&self, session_id: Uuid) -> Result<Vec<TaskMessage>>;
 }

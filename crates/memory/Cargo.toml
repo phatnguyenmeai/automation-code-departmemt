@@ -1,28 +1,18 @@
 [package]
-name = "cli"
+name = "memory"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-[[bin]]
-name = "agentdept"
-path = "src/main.rs"
-
 [dependencies]
 agent-core = { path = "../agent-core" }
-gateway = { path = "../gateway" }
 storage = { path = "../storage" }
-plugin = { path = "../plugin" }
-server = { path = "../server" }
 llm-claude = { path = "../llm-claude" }
-memory = { path = "../memory" }
-agents = { path = "../agents" }
 tokio.workspace = true
-clap.workspace = true
+async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-toml.workspace = true
-anyhow.workspace = true
+thiserror.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
 uuid.workspace = true
+chrono.workspace = true
