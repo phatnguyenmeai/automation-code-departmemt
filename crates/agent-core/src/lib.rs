@@ -7,7 +7,7 @@ pub mod agent;
 pub mod message;
 pub mod role;
 
-pub use agent::{Agent, AgentCtx, AgentOutput, Dispatcher};
+pub use agent::{Agent, AgentCtx, AgentOutput, ContextAssembly, ContextBudget, Dispatcher};
 pub use message::{Priority, TaskId, TaskKind, TaskMessage};
 pub use role::Role;
 

@@ -16,6 +16,44 @@ base_url = "http://localhost:3000"
 # Set to false to skip UI scenarios entirely (useful in CI w/o a browser).
 enable_playwright = true
 
+# Memory management configuration (OpenClaw-style).
+# When enabled, agents receive prior conversation context via memory recall.
+[memory]
+enabled = true
+# Token threshold before triggering compaction (summarization of older messages).
+compact_threshold = 6000
+
+# Per-agent memory budgets. Each agent can have different context window allocations.
+[memory.budgets.ba]
+total_context_tokens = 8000
+system_prompt_reserve = 500
+current_task_reserve = 3000
+history_budget = 4500
+
+[memory.budgets.dev]
+total_context_tokens = 8000
+system_prompt_reserve = 500
+current_task_reserve = 4000
+history_budget = 3500
+
+[memory.budgets.frontend]
+total_context_tokens = 8000
+system_prompt_reserve = 500
+current_task_reserve = 4000
+history_budget = 3500
+
+[memory.budgets.test_strategy]
+total_context_tokens = 12000
+system_prompt_reserve = 500
+current_task_reserve = 5000
+history_budget = 6500
+
+[memory.budgets.test_exec]
+total_context_tokens = 4000
+system_prompt_reserve = 300
+current_task_reserve = 2000
+history_budget = 1700
+
 # Skills configuration — each skill is a directory under skills/ with a SKILL.md manifest.
 [skills]
 # Directory containing skill definitions.

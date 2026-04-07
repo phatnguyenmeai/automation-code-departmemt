@@ -6,6 +6,8 @@ use gateway::storage::sqlite::SqliteStorage;
 use gateway::storage::{SessionStatus, Storage};
 use gateway::{Gateway, Workspace};
 use llm_claude::{ClaudeClient, ClaudeModel};
+use memory::assembler::ContextAssembler;
+use memory::sqlite::SqliteMemory;
 use plugin::builtin;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -179,10 +181,20 @@ async fn run(
         .map_err(|_| anyhow::anyhow!("ANTHROPIC_API_KEY env var required"))?;
 
     // Create workspace: persistent if --db is provided, ephemeral otherwise.
+    // When storage is available, also create memory-aware context assembler.
     let mut gw = if let Some(ref db) = db_path {
         let storage = open_storage(db)?;
-        let ws = Workspace::with_storage(cfg.workspace.id, storage);
-        Gateway::new(ws)
+        let ws = Workspace::with_storage(cfg.workspace.id, storage.clone());
+        let gw = Gateway::new(ws);
+
+        // Wire in OpenClaw-style memory management.
+        let mem = SqliteMemory::new(
+            storage,
+            claude.clone(),
+            parse_model(&cfg.models.ba)?, // Use BA model for summarization (cost-effective)
+        );
+        let assembler = ContextAssembler::new(Arc::new(mem));
+        gw.with_assembler(Arc::new(assembler))
     } else {
         Gateway::new(Workspace::new(cfg.workspace.id))
     };
@@ -320,8 +332,15 @@ async fn resume(
         .map_err(|_| anyhow::anyhow!("ANTHROPIC_API_KEY env var required"))?;
 
     // Create a fresh workspace with storage for the re-run.
+    // Wire in OpenClaw-style memory management for context recall.
     let ws = Workspace::with_storage(record.workspace_id, storage.clone());
-    let mut gw = Gateway::new(ws);
+    let mem = SqliteMemory::new(
+        storage.clone(),
+        claude.clone(),
+        parse_model(&cfg.models.ba)?,
+    );
+    let assembler = ContextAssembler::new(Arc::new(mem));
+    let mut gw = Gateway::new(ws).with_assembler(Arc::new(assembler));
 
     let session = gw.session();
     session

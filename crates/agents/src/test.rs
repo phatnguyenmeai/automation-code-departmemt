@@ -1,6 +1,6 @@
 use crate::parse_json;
 use agent_core::{
-    Agent, AgentCtx, AgentError, AgentOutput, Result, Role, TaskKind, TaskMessage,
+    Agent, AgentCtx, AgentError, AgentOutput, ContextBudget, Result, Role, TaskKind, TaskMessage,
 };
 use async_trait::async_trait;
 use llm_claude::{ClaudeClient, ClaudeModel, PromptBuilder};
@@ -30,6 +30,8 @@ pub struct TestAgent {
     /// Whether to actually spawn Playwright MCP. Set to false to skip UI tests
     /// (useful when the environment has no browser).
     enable_playwright: bool,
+    /// Memory budget for context assembly.
+    budget: ContextBudget,
 }
 
 #[derive(Default)]
@@ -54,6 +56,12 @@ impl TestAgent {
             buf: Arc::new(Mutex::new(Buffer::default())),
             base_url: base_url.into(),
             enable_playwright,
+            budget: ContextBudget {
+                total_context_tokens: 12000,
+                system_prompt_reserve: 500,
+                current_task_reserve: 5000,
+                history_budget: 6500,
+            },
         }
     }
 }
@@ -64,7 +72,7 @@ impl Agent for TestAgent {
         Role::Test
     }
 
-    async fn handle(&mut self, msg: TaskMessage, _ctx: &AgentCtx) -> Result<AgentOutput> {
+    async fn handle(&mut self, msg: TaskMessage, ctx: &AgentCtx) -> Result<AgentOutput> {
         {
             let mut buf = self.buf.lock().await;
             match msg.kind {
@@ -96,16 +104,45 @@ impl Agent for TestAgent {
             )
         };
 
-        let plan_prompt = PromptBuilder::new()
-            .json_section("ImplSpec (stories+api)", &impl_spec)
-            .json_section("FrontendSpec", &fe_spec)
-            .section("Base URL", &self.base_url)
-            .section("Task", "Produce test plan JSON.")
-            .build();
+        // Build strategy prompt — with memory context if available.
+        let (strategy_system, plan_prompt) = if let Some(assembler) = &ctx.assembler {
+            // Create a synthetic message with combined specs for context assembly.
+            let combined_payload = serde_json::json!({
+                "impl_spec": impl_spec,
+                "frontend_spec": fe_spec,
+                "base_url": &self.base_url,
+            });
+            let synthetic = TaskMessage::new(
+                Role::Dev,
+                Role::Test,
+                TaskKind::TestPlan,
+                combined_payload,
+            );
+            let (sys, prompt, tokens, entries) = assembler
+                .assemble(
+                    ctx.session_id,
+                    self.role(),
+                    &synthetic,
+                    STRATEGY_SYSTEM,
+                    "Produce test plan JSON.",
+                    &self.budget,
+                )
+                .await;
+            tracing::debug!(tokens, entries, "Test: assembled strategy context with memory");
+            (sys, prompt)
+        } else {
+            let prompt = PromptBuilder::new()
+                .json_section("ImplSpec (stories+api)", &impl_spec)
+                .json_section("FrontendSpec", &fe_spec)
+                .section("Base URL", &self.base_url)
+                .section("Task", "Produce test plan JSON.")
+                .build();
+            (STRATEGY_SYSTEM.to_string(), prompt)
+        };
 
         let plan_text = self
             .llm
-            .complete(self.strategy_model, Some(STRATEGY_SYSTEM), &plan_prompt, 3072)
+            .complete(self.strategy_model, Some(&strategy_system), &plan_prompt, 3072)
             .await
             .map_err(|e| AgentError::Llm(e.to_string()))?;
         let plan = parse_json(&plan_text).map_err(|e| AgentError::Llm(e.to_string()))?;
