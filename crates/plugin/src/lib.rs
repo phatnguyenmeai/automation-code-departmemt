@@ -11,12 +11,14 @@ pub mod mongo_tool;
 pub mod playwright_tool;
 pub mod registry;
 pub mod skill;
+pub mod telegram;
 pub mod tool;
 
 pub use cargo_tool::CargoTool;
-pub use channel::{ChannelEvent, ChannelPlugin};
+pub use channel::{ChannelEvent, ChannelPlugin, ChannelReply};
 pub use mongo_tool::MongoTool;
 pub use playwright_tool::PlaywrightRunnerTool;
 pub use registry::ToolRegistry;
 pub use skill::{SkillManifest, SkillRegistry};
+pub use telegram::{TelegramConfig, TelegramPlugin};
 pub use tool::{ToolContext, ToolError, ToolPlugin, ToolResult};

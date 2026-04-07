@@ -9,6 +9,7 @@ use llm_claude::{ClaudeClient, ClaudeModel};
 use memory::assembler::ContextAssembler;
 use memory::sqlite::SqliteMemory;
 use plugin::builtin;
+use plugin::ChannelPlugin;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -70,6 +71,9 @@ enum Cmd {
         /// Path to the SQLite database.
         #[arg(long, default_value = "data/sessions.db")]
         db: PathBuf,
+        /// Workspace config file (for Telegram and other integrations).
+        #[arg(long, default_value = "config/workspace.toml")]
+        config: PathBuf,
         /// Directory containing skill definitions (SKILL.md files).
         #[arg(long, default_value = "skills")]
         skills_dir: PathBuf,
@@ -78,6 +82,14 @@ enum Cmd {
         /// Can also be set via AGENTDEPT_ADMIN_KEY env var.
         #[arg(long, env = "AGENTDEPT_ADMIN_KEY")]
         admin_key: Option<String>,
+        /// Telegram bot token (overrides config file).
+        /// Can also be set via TELEGRAM_BOT_TOKEN env var.
+        #[arg(long, env = "TELEGRAM_BOT_TOKEN")]
+        telegram_token: Option<String>,
+        /// Default Telegram chat ID for reports.
+        /// Can also be set via TELEGRAM_CHAT_ID env var.
+        #[arg(long, env = "TELEGRAM_CHAT_ID")]
+        telegram_chat_id: Option<i64>,
     },
 }
 
@@ -87,6 +99,8 @@ struct WorkspaceConfig {
     models: ModelsSection,
     #[serde(default)]
     test: TestSection,
+    /// Optional Telegram bot integration.
+    telegram: Option<plugin::TelegramConfig>,
 }
 
 #[derive(Deserialize)]
@@ -157,9 +171,12 @@ async fn main() -> Result<()> {
         Cmd::Serve {
             port,
             db,
+            config,
             skills_dir,
             admin_key,
-        } => serve(port, db, skills_dir, admin_key).await,
+            telegram_token,
+            telegram_chat_id,
+        } => serve(port, db, config, skills_dir, admin_key, telegram_token, telegram_chat_id).await,
     }
 }
 
@@ -441,8 +458,26 @@ async fn list_sessions(db_path: PathBuf, limit: usize) -> Result<()> {
     Ok(())
 }
 
-async fn serve(port: u16, db_path: PathBuf, skills_dir: PathBuf, admin_key: Option<String>) -> Result<()> {
+async fn serve(
+    port: u16,
+    db_path: PathBuf,
+    config_path: PathBuf,
+    skills_dir: PathBuf,
+    admin_key: Option<String>,
+    telegram_token: Option<String>,
+    telegram_chat_id: Option<i64>,
+) -> Result<()> {
     let storage = open_storage(&db_path)?;
+
+    // Load workspace config (optional — server can run without it).
+    let workspace_cfg: Option<WorkspaceConfig> = if config_path.exists() {
+        let cfg_text = std::fs::read_to_string(&config_path)
+            .with_context(|| format!("reading config {}", config_path.display()))?;
+        Some(toml::from_str(&cfg_text).context("parsing config")?)
+    } else {
+        tracing::info!(path = %config_path.display(), "config not found, using defaults");
+        None
+    };
 
     // Initialize tool registry with built-in tools.
     let tool_registry = builtin::default_registry();
@@ -459,10 +494,103 @@ async fn serve(port: u16, db_path: PathBuf, skills_dir: PathBuf, admin_key: Opti
         tracing::info!(dir = %skills_dir.display(), "skills directory not found, skipping");
     }
 
-    // No channel plugins registered by default — users can add them via the plugin system.
-    let channels = HashMap::new();
+    // Initialize channel plugins.
+    let mut channels: HashMap<String, Arc<dyn ChannelPlugin>> = HashMap::new();
+    let mut telegram_ref: Option<Arc<plugin::TelegramPlugin>> = None;
+
+    // Set up Telegram if configured.
+    let tg_config = build_telegram_config(
+        workspace_cfg.as_ref().and_then(|c| c.telegram.clone()),
+        telegram_token,
+        telegram_chat_id,
+    );
+
+    if let Some(tg_cfg) = tg_config {
+        let webhook_mode = tg_cfg.webhook_mode;
+        let tg = Arc::new(plugin::TelegramPlugin::new(tg_cfg));
+
+        // Verify bot token.
+        match tg.get_me().await {
+            Ok(bot) => {
+                eprintln!(
+                    "Telegram bot connected: @{} ({})",
+                    bot.username.as_deref().unwrap_or("unknown"),
+                    bot.first_name
+                );
+                tracing::info!(
+                    bot_username = ?bot.username,
+                    bot_id = bot.id,
+                    "telegram bot verified"
+                );
+            }
+            Err(e) => {
+                eprintln!("WARNING: Telegram bot verification failed: {e}");
+                tracing::warn!(error = %e, "telegram bot verification failed");
+            }
+        }
+
+        channels.insert("telegram".into(), tg.clone());
+        telegram_ref = Some(tg.clone());
+
+        // Start long-polling if not in webhook mode.
+        if !webhook_mode {
+            let poll_tg = tg.clone();
+            // Delete any existing webhook to enable long-polling.
+            if let Err(e) = poll_tg.delete_webhook().await {
+                tracing::warn!(error = %e, "failed to delete telegram webhook");
+            }
+
+            let (poll_handle, mut poll_rx) = plugin::telegram::spawn_polling(poll_tg, 30);
+
+            // Spawn a task to forward polling events to the pipeline.
+            let poll_storage = storage.clone();
+            tokio::spawn(async move {
+                while let Some(event) = poll_rx.recv().await {
+                    let is_command = event
+                        .metadata
+                        .get("is_command")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+
+                    if is_command {
+                        tracing::info!(
+                            command = %event.text,
+                            sender = %event.sender,
+                            "telegram command received"
+                        );
+                        // Commands are handled by the polling loop itself for now.
+                        continue;
+                    }
+
+                    // Non-command messages create sessions (requirements).
+                    let session_id = uuid::Uuid::new_v4();
+                    if let Err(e) = poll_storage
+                        .create_session(session_id, "telegram", Some(&event.text))
+                        .await
+                    {
+                        tracing::error!(error = %e, "failed to create session for telegram message");
+                        continue;
+                    }
+
+                    tracing::info!(
+                        session_id = %session_id,
+                        sender = %event.sender,
+                        text = %event.text,
+                        "telegram message -> session created"
+                    );
+                }
+            });
+
+            // The poll_handle will run until dropped.
+            std::mem::forget(poll_handle);
+        }
+    }
 
     let mut state = server::state::AppState::new(storage.clone(), tool_registry, skill_registry, channels);
+
+    if let Some(tg) = telegram_ref {
+        state = state.with_telegram(tg);
+    }
 
     // Bootstrap admin key and enable auth if provided.
     if let Some(ref key) = admin_key {
@@ -477,15 +605,49 @@ async fn serve(port: u16, db_path: PathBuf, skills_dir: PathBuf, admin_key: Opti
 
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
     eprintln!("AgentDept Gateway starting on http://0.0.0.0:{port}");
-    eprintln!("  Dashboard: http://localhost:{port}/");
-    eprintln!("  API:       http://localhost:{port}/api/health");
-    eprintln!("  WebSocket: ws://localhost:{port}/ws");
+    eprintln!("  Dashboard:  http://localhost:{port}/");
+    eprintln!("  API:        http://localhost:{port}/api/health");
+    eprintln!("  WebSocket:  ws://localhost:{port}/ws");
+    if state.telegram.is_some() {
+        eprintln!("  Telegram:   http://localhost:{port}/api/telegram/status");
+        eprintln!("  Webhook:    http://localhost:{port}/channels/telegram/webhook");
+    }
     if state.auth_enabled {
-        eprintln!("  Auth:      Bearer token required for /api/* and /ws");
+        eprintln!("  Auth:       Bearer token required for /api/* and /ws");
         eprintln!("  Create keys: POST /api/keys (with admin key)");
     }
 
     server::serve(state, addr)
         .await
         .map_err(|e| anyhow::anyhow!("server: {e}"))
+}
+
+/// Build Telegram config by merging config file, env vars, and CLI args.
+fn build_telegram_config(
+    file_cfg: Option<plugin::TelegramConfig>,
+    cli_token: Option<String>,
+    cli_chat_id: Option<i64>,
+) -> Option<plugin::TelegramConfig> {
+    // CLI token takes precedence over file config.
+    let token = cli_token.or_else(|| file_cfg.as_ref().map(|c| c.bot_token.clone()));
+
+    let token = token?;
+
+    let base = file_cfg.unwrap_or(plugin::TelegramConfig {
+        bot_token: String::new(),
+        default_chat_id: None,
+        allowed_users: vec![],
+        webhook_mode: false,
+        webhook_url: None,
+        parse_mode: "HTML".into(),
+    });
+
+    Some(plugin::TelegramConfig {
+        bot_token: token,
+        default_chat_id: cli_chat_id.or(base.default_chat_id),
+        allowed_users: base.allowed_users,
+        webhook_mode: base.webhook_mode,
+        webhook_url: base.webhook_url,
+        parse_mode: base.parse_mode,
+    })
 }

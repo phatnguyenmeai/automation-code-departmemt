@@ -14,6 +14,7 @@ pub mod api;
 pub mod auth;
 pub mod channels;
 pub mod state;
+pub mod telegram;
 pub mod ui;
 pub mod ws;
 
@@ -40,6 +41,7 @@ pub fn build_router(state: state::AppState) -> Router {
     let protected = Router::new()
         .merge(api::routes())
         .merge(channels::routes())
+        .merge(telegram::routes())
         .merge(ws::routes())
         .layer(middleware::from_fn_with_state(
             state.clone(),

@@ -1,6 +1,6 @@
 //! Shared application state for the server.
 
-use plugin::{ChannelPlugin, SkillRegistry, ToolRegistry};
+use plugin::{ChannelPlugin, SkillRegistry, TelegramPlugin, ToolRegistry};
 use std::collections::HashMap;
 use std::sync::Arc;
 use storage::Storage;
@@ -21,6 +21,8 @@ pub struct AppState {
     pub tool_registry: Arc<ToolRegistry>,
     pub skill_registry: Arc<Mutex<SkillRegistry>>,
     pub channels: Arc<HashMap<String, Arc<dyn ChannelPlugin>>>,
+    /// Direct reference to the Telegram plugin (if configured).
+    pub telegram: Option<Arc<TelegramPlugin>>,
     /// Broadcast channel for real-time pipeline events.
     pub events_tx: broadcast::Sender<PipelineEvent>,
     /// Whether API key authentication is enforced.
@@ -40,9 +42,16 @@ impl AppState {
             tool_registry: Arc::new(tool_registry),
             skill_registry: Arc::new(Mutex::new(skill_registry)),
             channels: Arc::new(channels),
+            telegram: None,
             events_tx,
             auth_enabled: false,
         }
+    }
+
+    /// Set the Telegram plugin reference.
+    pub fn with_telegram(mut self, telegram: Arc<TelegramPlugin>) -> Self {
+        self.telegram = Some(telegram);
+        self
     }
 
     /// Enable authentication enforcement.
